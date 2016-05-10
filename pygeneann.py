@@ -4,12 +4,14 @@ import sys
 import pysam
 import bisect
 import time
+import sequtils
+print >> sys.stderr, "Version 0.2"
 class GeneBed():
 	def __init__(self, bed_line):
 		tmp = bed_line.split()
 		self.chr = tmp[0]
-		slef.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
-		slef.end = int(tmp[2])		# start and end are first and last base of each segment
+		self.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
+		self.end = int(tmp[2])		# start and end are first and last base of each segment
 		self.transcript_id = tmp[3]
 		self.type = tmp[4]
 		self.idx = int(tmp[5])
@@ -18,7 +20,7 @@ class GeneBed():
 		self.gene_id = tmp[8]
 	def __tostring__(self):
 		return bed_line.strip()
-class CommonFusion():
+class CffFusion():
 	def __init__(self, cff_line):
 		tmp = cff_line.split()
 		self.chr1 = tmp[0]
@@ -48,6 +50,140 @@ class CommonFusion():
 			self.chr2 = "chr" + self.chr2
 	def tostring(self):
 		return " \t".join(self.elements) + "\t" +  self.gene1 + "\t" + self.gene2
+	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
+	def __check_gene_pairs(self, genes1, genes2, gene_ann):
+		gene_order = []
+		type1 = []
+		type2 = []
+		id1 = []
+		id2 = []
+		category = ""
+		common_genes =  set(genes1.keys()) & set(genes2.keys())
+		for gene_name in set(genes1.keys()):
+			if gene_ann.is_coding(gene_name):
+				type1.append("CodingGene")
+				id1.append(str(gene_ann.get_coding_gene_idx(gene_name)))
+			else:
+				type1.append("NoncodingGene")
+		for gene_name in set(genes2.keys()):
+			if gene_ann.is_coding(gene_name):
+				type2.append("CodingGene")
+				id2.append(str(gene_ann.get_coding_gene_idx(gene_name)))
+			else:
+				type2.append("NoncodingGene")
+
+		# No driver gene
+		if not genes1:
+			gene_order.append("NoDriverGene")
+			gene_order.extend(["NA"]*3)
+		# map to same gene
+		elif common_genes:
+			gene_order.append("SameGene" + "\t" + ",".join(list(common_genes)))
+			gene_order.extend(["NA"]*2)
+		else:
+			list1 = []
+			for gene_name in genes1:
+				tmp = set(genes1[gene_name])
+				list1.append(gene_name + "_" + ",".join(list(tmp)))
+			list2 = []
+			for gene_name in genes2:
+				tmp = set(genes2[gene_name])
+				list2.append(gene_name + "_" + ",".join(list(tmp)))
+			#gene_order.append(",".join(list(set(genes1))) + ">>" + ",".join(list(set(genes2))))
+
+			# category fusions into: read through, gene fusion, truncated coding, truncated noncoding, nonsense
+			if "CodingGene" in type1 and "CodingGene" in type2:
+				for id in id1:
+					tmp = id.split("_")
+					id = int(tmp[0])
+					strand = tmp[1]
+					if (strand == "f" and  str(id+1) + "_f" in id2 ) or (strand == "r" and  str(id-1) + "_r" in id2):
+						category = "ReadThrough"
+					else:
+						category = "GeneFusion"
+			elif "CodingGene" in type1:
+				category = "TruncatedCoding"
+			elif "NoncodingGene" in type1:
+				category = "TruncatedNoncoding"
+			elif not type1:
+				category = "NonSense"
+			else:
+				print >> sys.stderr, "Warning: unknown category."
+				print >> sys.stderr, type1, type2
+
+
+
+			gene_order.append(",".join(list1) + ">>" + ",".join(list2))
+			gene_order.append(",".join(type1) + ">>" + ",".join(type2))
+			gene_order.append(",".join(id1) + ">>" + ",".join(id2))
+			gene_order.append(category)
+
+		return gene_order
+
+	def ann_gene_order(self, gene_ann):
+		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
+		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
+
+		a = {} # forward strand gene at pos1
+		c = {} # backward strand gene at pos1
+		b = {} # forward strand gene at pos2
+		d = {} # backward strand gene at pos2
+		gene_order = []
+		for gene in matched_genes1:
+			if gene.strand == "f":
+				a.setdefault(gene.gene_name, []).append(gene.type)
+			else:
+				c.setdefault(gene.gene_name, []).append(gene.type)
+		for gene in matched_genes2:
+			if gene.strand == "f":
+				b.setdefault(gene.gene_name, []).append(gene.type)
+			else:
+				d.setdefault(gene.gene_name, []).append(gene.type)
+
+		if self.strand1 == "+" and self.strand2 == "+":
+			gene_order = self.__check_gene_pairs(a, d, gene_ann)
+			gene_order += self.__check_gene_pairs(b, c, gene_ann)
+		elif self.strand1 == "+" and self.strand2 == "-":
+			gene_order = self.__check_gene_pairs(a, b, gene_ann)
+			gene_order += self.__check_gene_pairs(d, c, gene_ann)
+		elif self.strand1 == "-" and self.strand2 == "+":
+			gene_order = self.__check_gene_pairs(c, d, gene_ann)
+			gene_order += self.__check_gene_pairs(b, a, gene_ann)
+		elif self.strand1 == "-" and self.strand2 == "-":
+			gene_order = self.__check_gene_pairs(c, b, gene_ann)
+			gene_order += self.__check_gene_pairs(d, a, gene_ann)
+		return gene_order
+
+	# realign breakpoints of this fusion to the left most 
+	def left_aln_fusion_bp(self, ref_file):
+		rlen = 100
+		refs = pysam.FastaFile(ref_file)
+
+		#pysam use 0-based coordinates, cff use 1-based coordinates
+		if self.strand1 == "+" and self.strand2 == "+":
+			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1), "r")
+			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2, self.pos2+rlen), "c")
+		elif self.strand1 == "+" and  self.strand2 == "-":
+			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1), "r")
+			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1), "r")
+		elif self.strand1 == "-" and  self.strand2 == "+":
+			up_seq = refs.fetch(self.chr1, self.pos1-1, self.pos1+rlen-1)
+			down_seq = refs.fetch(self.chr2, self.pos2, self.pos2+rlen)
+		elif self.strand1 == "-" and  self.strand2 == "-":
+			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-1, self.pos1+rlen-1), "c")
+			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1), "r")
+		else:
+			print >> sys.stderr, "Unknown strand:", self.strand1, self.strand2
+			sys.exit(1)
+		i = 0
+		while i < rlen:
+			if up_seq[i].upper() == down_seq[i].upper():
+				i += 1
+			else:
+				break
+		print up_seq.upper()
+		print down_seq.upper()
+		return i
 				
 class GeneIntervals():
 	def __init__(self, bed_ann_list):
@@ -62,20 +198,27 @@ class GeneIntervals():
 		self.load(bed_ann_list)
 	def load(self, bed_ann_list):
 		if not bed_ann_list:
-			print >> sys.stderr, "Empty GeneBed annotation."
-			sys.exit(1)
-		if len(set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])) > 1:
-			print >> sys.stderr, "GeneBed annotation includes multiple genes."
-			print >> sys.stderr, bed_ann_list
-			sys.exit(1)
+			self.gene_name = "NA"
+			self.chr = "NA"
+			self.start = -1
+			self.end = -1
+			self.strand = "NA"
+			self.is_coding = False
+			#print >> sys.stderr, "Empty GeneBed annotation."
+			#sys.exit(1)
 		else:
+			# warnning when same gene on different chr/strand, load  the first annotation
+			if len(set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])) > 1:
+				print >> sys.stderr, "Warnning: GeneBed annotation includes multiple genes."
+				print >> sys.stderr, set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])
+				#sys.exit(1)
 			self.gene_name = bed_ann_list[0].gene_name
 			self.chr = bed_ann_list[0].chr
 			self.strand= bed_ann_list[0].strand
 
-		self.start = min([a.start for a in bed_ann_list])
-		self.end = max([a.end for a in bed_ann_list])
-		self.is_coding = Ture if "cds" in [a.type for a in bed_ann_list] else False
+			self.start = min([a.start for a in bed_ann_list])
+			self.end = max([a.end for a in bed_ann_list])
+			self.is_coding = True if "cds" in [a.type for a in bed_ann_list] else False
 				
 	
 	def overlap(self, interval2):
@@ -125,12 +268,25 @@ class GeneAnnotation():
 	__gene_name_idx_map = {}
 	__coding_gene_list = []
 	# gene_ann_bed
-	# chr1    24683494        24685032        ENST00000003583 utr3    0       r       STPG1   ENSG00000001460
+	# chr1    24683494	24685032	ENST00000003583 utr3    0       r       STPG1   ENSG00000001460
 	def __init__(self, gene_ann_bed):
 		if gene_ann_bed != "":
 			self.load_gene_bed(gene_ann_bed)
 			self.load_gene_intervals(gene_ann_bed)
 			self.build_coding_gene_list()
+			'''
+			print >> sys.stderr, "mem of gene_starts:", sys.getsizeof(self.__gene_starts)
+			print >> sys.stderr, "length:", len(self.__gene_starts.keys())
+			print >> sys.stderr, "unit size:", sys.getsizeof(self.__gene_starts[self.__gene_starts.keys()[0]])
+				
+			print >> sys.stderr, "mem of genes:", sys.getsizeof(self.__genes)
+			print >> sys.stderr, "length:", len(self.__genes.keys())
+			print >> sys.stderr, "unit size:", sys.getsizeof(self.__genes[self.__genes.keys()[0]])
+
+			print >> sys.stderr, "mem of gene_intervals:", sys.getsizeof(self.__gene_intervals)
+			print >> sys.stderr, "length:", len(self.__gene_intervals.keys())
+			print >> sys.stderr, "unit size:", sys.getsizeof(self.__gene_intervals[self.__gene_intervals.keys()[0]])
+			'''
 			#self.load_transcripts_ann(gene_ann_bed)
 	# for each transcript save all its cds,intron, utr annotations in dictionary __transcripts_ann
 	def load_transcripts_ann(self, gene_ann_bed):
@@ -161,43 +317,11 @@ class GeneAnnotation():
 		# use gene name as key to bulid a dict for gene_ann_bed, all annotations for the same gene are saved in a list which will be used for getting intervals
 		for line in open(gene_ann_bed, "r"):
 			bed_ann = GeneBed(line)
+			if self.filter_gene_ann(bed_ann):
+				continue
 			tmp_dict.setdefault(bed_ann.gene_name, []).append(bed_ann)
 		for gene_name in tmp_dict:
-			sefl.__gene_intervals.setdefault(gene_name, GeneInterval(tmp_dict[gene_name]))
-			if bed_ann.type == "cds":
-				bed_ann.is_coding = True
-			else:
-				bed_ann.is_coding = False
-			
-			if bed_ann.gene_name in self.__gene_intervals:
-				pre_interval = self.__gene_intervals[bed_ann.gene_name]
-				pre_chr = pre_interval.chr
-				pre_start = pre_interval.start
-				pre_end = pre_interval.end
-				pre_strand = pre_interval.strand
-				pre_is_coding = pre_interval.is_coding
-
-				# In knowngenes some genes have annotations on different chrs or with different strands
-				''' 
-				if pre_chr != chr:
-					n1 += 1
-					#print >> sys.stderr, "Error: Gene", gene, "has annotations on different Chromosomes!", pre_chr, chr
-					#sys.exit(1)
-				if pre_strand != strand:
-					n2 += 1
-					#print >> sys.stderr, "Error: Gene", gene, "has annotations on different strands!", pre_strand, strand
-					#sys.exit(1)
-				'''
-				
-				# ignore annotation on other chr or strand, TODO should put them in a list and check the location
-				if pre_interval.chr == ann.chr and pre_interval.strand == ann.strand:
-					#new_interval = (chr, min(start, pre_start), max(end, pre_end), strand)
-					new_interval = GeneIntervals(ann.gene_name, ann.chr, min(ann.start, pre_interval.start),  max(ann.end, pre_interval.end), ann.strand, (pre_interval.is_coding | ann.is_coding))
-					self.__gene_intervals[ann.gene_name] = new_interval
-			
-			else:
-				interval = GeneIntervals(key, chr, start, end, strand, is_coding)
-				self.__gene_intervals.setdefault(key, interval)  
+			self.__gene_intervals.setdefault(gene_name, GeneIntervals(tmp_dict[gene_name]))
 		print >> sys.stderr, "Gene intervals loaded."
 		print >> sys.stderr, time.time() - start_time, "sec. elapsed."	
 		#print >> sys.stderr, "#gene on diff chr:", n1, "#gene on diff strand:", n2
@@ -212,21 +336,23 @@ class GeneAnnotation():
 		
 		i_f = 0 # idx of forward starnd gene
 		i_r = 0 # idx of reverse starnd gene
-		pre_interval_f = GeneIntervals("None", "chr0", 0, 0, "+", False)
-		pre_interval_r = GeneIntervals("None", "chr0", 0, 0, "-", False)
+		#pre_interval_f = GeneIntervals("None", "chr0", 0, 0, "+", False)
+		#pre_interval_r = GeneIntervals("None", "chr0", 0, 0, "-", False)
+		pre_interval_f = GeneIntervals([])
+		pre_interval_r = GeneIntervals([])
 		for interval in self.__coding_gene_list:
 			if interval.strand == "+" or interval.strand == "f":
 				if interval.overlap(pre_interval_f):
 					pre_interval_f = interval.merge(pre_interval_f)
 				else:
-					pre_intreval_f = interval
+					pre_interval_f = interval
 					i_f += 1
 				self.__gene_name_idx_map.setdefault(interval.gene_name, str(i_f) + "_" + interval.strand)
 			elif interval.strand == "-" or interval.strand == "r":
 				if interval.overlap(pre_interval_r):
 					pre_interval_r = interval.merge(pre_interval_r)
 				else:
-					pre_intreval_r = interval
+					pre_interval_r = interval
 					i_r += 1
 				self.__gene_name_idx_map.setdefault(interval.gene_name, str(i_r) + "_" + interval.strand)
 
@@ -240,17 +366,23 @@ class GeneAnnotation():
 
 	def test_intervals(self):
 		return self.__gene_intervals
-
+	def filter_gene_ann(self, ann):
+		if "hap" in ann.chr or "_" in ann.chr:
+			return True
+		else:
+			return False
 
 	def load_gene_bed(self, gene_ann_bed):
 		start_time = time.time()
 		n = 0
 		for line in open(gene_ann_bed, "r"):
-
 			ann = GeneBed(line)
-			self.__genes.setdefault(chr, []).append(ann)
-			# gene id and name map
-			self.__gene_name_id_map.setdefault(gene_name, gene_id)
+			# filter out annotation not needed, e.g. gene annotation on chr_hap
+			if self.filter_gene_ann(ann):
+				continue
+			self.__genes.setdefault(ann.chr, []).append(ann)
+			# gene id and name map, this dict will take ~3G ram for ensgene annotation, current not loaded
+			#self.__gene_name_id_map.setdefault(ann.gene_name, ann.gene_id)
 			n += 1
 		print >> sys.stderr, n, "annotations from", gene_ann_bed, "loaded."
 		# sort all ann of each chr by start pos
@@ -349,7 +481,11 @@ class GeneAnnotation():
 							#	previous_exons.append(adjacent_bpann)
 							#	break
 			idx -= 1
-		return previous_exons, next_exons
+		return previous_exons, next_exons	
+		
+		
+			
+				
 class GeneFusions():
 	__fusions = {}
 	__genes = {}
@@ -382,7 +518,7 @@ class GeneFusions():
 			if line.startswith(("@", "#", "Chromosome1", "gene_")):
 				continue
 
-			fusion = CommonFusion(line)
+			fusion = CffFusion(line)
 			gene_info1 = self.__geneann.map_pos_to_genes(fusion.chr1, fusion.pos1)
 			gene_info2 = self.__geneann.map_pos_to_genes(fusion.chr2, fusion.pos2)
 			gene_name1 = sorted(list(set([g[7] for g in gene_info1])))
@@ -576,7 +712,7 @@ def output_fusion_fasta(fusion, refs, seg_len):
 		seq2 = rc_seq(refs.fetch(fusion.chr2, win_start2, win_end2))
 	seq = seq1 + seq2
 # build transcript sequence based on bed format annotation file
-# chr1    24683494        24685032        ENST00000003583 utr3    0       r       STPG1   ENSG00000001460
+# chr1    24683494	24685032	ENST00000003583 utr3    0       r       STPG1   ENSG00000001460
 	
 def build_transcript_seq(gene_ann, ref):
 	trans_seqs = {}
