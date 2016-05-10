@@ -20,6 +20,76 @@ class GeneBed():
 		self.gene_id = tmp[8]
 	def __tostring__(self):
 		return bed_line.strip()
+class CffFileStats():
+	__fusion_dict = {}
+	__fusion_samples_dict = {}
+	def __init__(self, cff_file):
+		self.__load_fusions(cff_file)
+	def __load_fusions(self, cff_file):
+		for line in open(cff_file, "r"):
+			fusion = CffFusion(line)
+	
+			key = fusion.gene1 + "_" + fusion.gene2
+			rkey = fusion.gene2 + "_" + fusion.gene1
+			if rkey not in self.__fusion_dict:
+				self.__fusion_dict.setdefault(key, []).append(fusion)
+				self.__fusion_samples_dict.setdefault(key, []).append(fusion.sample)
+			else:
+				self.__fusion_dict.setdefault(rkey,[]).append(fusion)
+				self.__fusion_samples_dict.setdefault(rkey, []).append(fusion.sample)
+	def get_gene_order_stats(self):
+		for key in self.__fusion_dict:
+			n_sg = 0
+			n_rt = 0 # read through
+			n_gf = 0 # gene fusion
+			n_tc = 0 # truncated coding
+			n_tn = 0 # truncated noncoding
+			n_ns = 0 # nonsense
+			gene_order = []
+			sample_type = []
+			for sample in set(self.__fusion_samples_dict[key]):
+				if sample.endswith("N"):
+					sample_type.append("Normal")
+				elif sample.endswith("T"):
+					sample_type.append("Tumor")
+				else:
+					sample_type.append("Unknown")
+
+			type = "Unknown"
+			for fusion in self.__fusion_dict[key]:
+				tmp = ";".join(fusion.otherann)
+				gene_order.append(tmp)
+				if "SameGene" in tmp:
+					type = "SameGene"
+					n_sg += 1
+				elif "ReadThrough" in tmp:
+					type = "ReadThrough" if type == "Unknown" else type
+					n_rt += 1
+				elif "GeneFusion" in tmp:
+					type = "GeneFusion" if type == "Unknown" else type
+					n_gf += 1
+				elif "TruncatedCoding" in tmp:
+					type = "TruncatedCoding" if type == "Unknown" else type
+					n_tc +=1
+				elif "TruncatedNoncoding" in tmp:
+					type = "TruncatedNoncoding" if type == "Unknown" else type
+					n_tn += 1
+				elif "NoDriverGene" in tmp:
+					type = "NoDriverGene" if type == "Unknown" else type
+					n_ns += 1
+				else:
+					print >> sys.stderr, "Fusions without category:", fusion.tostring()
+			if type != "Unknown":
+				print "Fusion", fusion.gene1, fusion.gene2, ",".join(list(set(self.__fusion_samples_dict[key]))), type, ",".join(sorted(list(set(sample_type)))),
+				print "|".join(list(set(gene_order)))
+				print "\tSameGene:", n_sg
+				print "\tReadThrough:", n_rt
+				print "\tGeneFusion:", n_gf
+				print "\tTruncatedCoding:", n_tc
+				print "\tTruncatedNoncoding:", n_tn
+				print "\tNonSense:", n_ns
+
+
 class CffFusion():
 	def __init__(self, cff_line):
 		tmp = cff_line.split()
@@ -38,18 +108,21 @@ class CffFusion():
 		self.tool = tmp[12]
 		self.id = tmp[13]
 		self.score = float(tmp[14]) if tmp[14] != "NA" else tmp[9]
-		self.otherann = tmp[15:]
-		self.gene1 = "NA"
-		self.gene2 = "NA"
+		self.otherann = tmp[19:]
+		self.gene1 = tmp[15]
+		self.type1 = tmp[16]
+		self.gene2 = tmp[17]
+		self.type2 = tmp[18]
 		self.trans_id1 = "NA"
 		self.trans_id2 = "NA"
-		self.elements = tmp[0:]
+		#self.elements = tmp[0:]
 
 		if not self.chr1.startswith("chr"):
 			self.chr1 = "chr" + self.chr1
 			self.chr2 = "chr" + self.chr2
 	def tostring(self):
-		return " \t".join(self.elements) + "\t" +  self.gene1 + "\t" + self.gene2
+		#return " \t".join(self.elements) + "\t" +  self.gene1 + "\t" + self.gene2
+		return "\t".join(map(lambda x:str(x), [self.chr1, self.pos1, self.strand1, self.chr2, self.pos2, self.strand2, self.orf, self.read_through, self.split_cnt, self.span_cnt, self.sample, self.lib, self.tool, self.id, self.score, self.gene1, self.type1, self.gene2, self.type2, "\t".join(self.otherann)]))
 	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
 	def __check_gene_pairs(self, genes1, genes2, gene_ann):
 		gene_order = []
@@ -108,7 +181,7 @@ class CffFusion():
 			elif not type1:
 				category = "NonSense"
 			else:
-				print >> sys.stderr, "Warning: unknown category."
+				print >> sys.stderr, "Warning: Unknown category."
 				print >> sys.stderr, type1, type2
 
 
@@ -121,6 +194,10 @@ class CffFusion():
 		return gene_order
 
 	def ann_gene_order(self, gene_ann):
+		gene_order = []
+		# fusion has been annotated
+		if self.otherann:
+			return gene_order
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
 
@@ -128,7 +205,6 @@ class CffFusion():
 		c = {} # backward strand gene at pos1
 		b = {} # forward strand gene at pos2
 		d = {} # backward strand gene at pos2
-		gene_order = []
 		for gene in matched_genes1:
 			if gene.strand == "f":
 				a.setdefault(gene.gene_name, []).append(gene.type)
@@ -139,7 +215,43 @@ class CffFusion():
 				b.setdefault(gene.gene_name, []).append(gene.type)
 			else:
 				d.setdefault(gene.gene_name, []).append(gene.type)
+		# for tools do not provide defuse-style strand, regenerate strands, this is assuming that gene1 = 5 prime gene and gene2 = 3 prime gene
+		if self.strand1 == "NA" or self.strand2 == "NA":
+			gene_interval1 = ""
+			gene_interval2 = ""
+			for sep in [",", "/"]:
+				for gene_name in (self.gene1).split(sep):
+					if not gene_interval1:
+						gene_interval1 = gene_ann.get_gene_interval(gene_name)
+					else:
+						break
+				for gene_name in (self.gene2).split(sep):
+					if not gene_interval2:
+						gene_interval2 = gene_ann.get_gene_interval(gene_name)
+					else:
+						break
+				
+			# Gene Strand : Defuse Strand
+			# + >> + : + -
+			# + >> - : + +
+			# - >> + : - -
+			# - >> - : - +
+			if gene_interval1 and gene_interval2:
+				if gene_interval1.strand == "f":
+					self.strand1 = "+"
+				else:
+					self.strand1 = "-"
+				if gene_interval2.strand == "f":
+					self.strand2 = "-"
+				else:
+					self.strand2 = "+"
+			else:
+				# failed to fill in strand, return list with warnning info
+				#gene_order.append("Strand_filling_failed")
+				return gene_order
 
+				
+				
 		if self.strand1 == "+" and self.strand2 == "+":
 			gene_order = self.__check_gene_pairs(a, d, gene_ann)
 			gene_order += self.__check_gene_pairs(b, c, gene_ann)
@@ -154,7 +266,7 @@ class CffFusion():
 			gene_order += self.__check_gene_pairs(d, a, gene_ann)
 		return gene_order
 
-	# realign breakpoints of this fusion to the left most 
+	# realign breakpoints of this fusion to the left most, not finished, how to define "left" when genes are on different chrs 
 	def left_aln_fusion_bp(self, ref_file):
 		rlen = 100
 		refs = pysam.FastaFile(ref_file)
