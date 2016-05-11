@@ -39,7 +39,7 @@ class CffFileStats():
 				self.__fusion_samples_dict.setdefault(rkey, []).append(fusion.sample)
 	def get_gene_order_stats(self):
 		for key in self.__fusion_dict:
-			n_sg = 0
+			n_sg = 0 # same gene
 			n_rt = 0 # read through
 			n_gf = 0 # gene fusion
 			n_tc = 0 # truncated coding
