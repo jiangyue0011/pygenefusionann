@@ -20,23 +20,112 @@ class GeneBed():
 		self.gene_id = tmp[8]
 	def __tostring__(self):
 		return bed_line.strip()
-class CffFileStats():
+class CffFusionStats():
 	__fusion_dict = {}
 	__fusion_samples_dict = {}
 	def __init__(self, cff_file):
-		self.__load_fusions(cff_file)
+		pass
+		#self.__load_fusions(cff_file)
 	def __load_fusions(self, cff_file):
 		for line in open(cff_file, "r"):
 			fusion = CffFusion(line)
-	
-			key = fusion.gene1 + "_" + fusion.gene2
-			rkey = fusion.gene2 + "_" + fusion.gene1
+			key = fusion.t_gene1 + "_" + fusion.t_gene2
+			rkey = fusion.t_gene2 + "_" + fusion.t_gene1
 			if rkey not in self.__fusion_dict:
 				self.__fusion_dict.setdefault(key, []).append(fusion)
-				self.__fusion_samples_dict.setdefault(key, []).append(fusion.sample)
+				self.__fusion_samples_dict.setdefault(key, []).append(fusion.sample_name)
 			else:
 				self.__fusion_dict.setdefault(rkey,[]).append(fusion)
-				self.__fusion_samples_dict.setdefault(rkey, []).append(fusion.sample)
+				self.__fusion_samples_dict.setdefault(rkey, []).append(fusion.sample_name)
+	
+	# compare two fusions based on the up/downstream gene sets, if overlap on both sets consider them as same fusion
+	def is_same_gene_pair_fusion(self, fusion1, fusion2):
+		strand = "fw" 
+		# compare gene sets on fw strand 
+		up_g1, down_g1 = set(fusion1.get_reannotated_genes(strand))
+		up_g2, down_g2 = set(fusion2.get_reannotated_genes(strand))
+
+		if up_g1 & up_g2 and down_g1 & down_g2:
+			return True
+
+		strand = "bw" 
+		# compare gene sets on bw strand 
+		up_g1, down_g1 = set(fusion1.get_reannotated_genes(strand))
+		up_g2, down_g2 = set(fusion2.get_reannotated_genes(strand))
+
+		if up_g1 & up_g2 and down_g1 & down_g2:
+			return True
+
+		return False
+	def generate_common_fusion_stats(self, cff_file):
+		fusion_dict = {}
+		common_key_dict = {}	
+		for line in  open(cff_file, "r"):
+			if line.startswith("#"):
+				continue
+			fusion = CffFusion(line)
+			keys = set()
+			strand = "fw"
+			if fusion.r_fw_category not in ["SameGene", "NoDriverGene"]:
+				up_g, down_g = fusion.get_reannotated_genes(strand)
+				for g1 in up_g:
+					for g2 in down_g:
+						key = g1 + "_" + g2 + "_" + strand
+						keys.add(key)
+						fusion_dict.setdefault(key, []).append(fusion)
+			strand = "bw"
+			if fusion.r_bw_category not in ["SameGene", "NoDriverGene"]:
+				up_g, down_g = fusion.get_reannotated_genes(strand)
+				for g1 in up_g:
+					for g2 in down_g:
+						key = g1 + "_" + g2 + "_" + strand
+						keys.add(key)
+						fusion_dict.setdefault(key, []).append(fusion)
+			# for breakpoints that can be mapped to multiple genes pairs, save these pairs in a dict, merge their fusion lists when output
+			if len(keys) > 1:
+				for key in keys:
+					if key in common_key_dict:
+						common_key_dict[key] |= keys
+						found = True
+					else:
+						common_key_dict[key] = keys
+		removed_keys = {} 
+		for key in fusion_dict:
+			if key in removed_keys:
+				continue
+			fusion_list = fusion_dict[key]
+
+			if key in common_key_dict:
+				key_set = common_key_dict[key]
+				while True:
+					l = len(key_set)
+					key_set2 = key_set.copy()
+					for key2 in key_set2:
+						if key2 != key:
+							key_set |= common_key_dict[key2]	
+					if l == len(key_set):
+						break
+				#print key, key_set
+				key_set.remove(key)
+				for key2 in key_set:
+					fusion_list += fusion_dict[key2]
+					removed_keys.setdefault(key2, key2)	
+
+			sample_list = [f.sample_name for f in fusion_list]	
+			disease_list = [f.disease for f in fusion_list]	
+			tool_list = [f.tool for f in fusion_list]	
+			sample_type_list = [f.sample_type for f in fusion_list]	
+			if key.endswith("fw"):
+				category_list = [f.r_fw_category for f in fusion_list]	
+				gene_order_list = [f.r_fw_gene_order for f in fusion_list]
+			elif key.endswith("bw"):
+				category_list = [f.r_bw_category for f in fusion_list]	
+				gene_order_list = [f.r_bw_gene_order for f in fusion_list]
+			else:
+				print  >> sys.stderr, "Key Error:", key
+				sys.exit(1)
+			print key, ",".join(list(set(sample_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), ",".join(list(set(gene_order_list)))
+				
 	def get_gene_order_stats(self):
 		for key in self.__fusion_dict:
 			n_sg = 0 # same gene
@@ -57,8 +146,11 @@ class CffFileStats():
 
 			type = "Unknown"
 			for fusion in self.__fusion_dict[key]:
-				tmp = ";".join(fusion.otherann)
-				gene_order.append(tmp)
+				#tmp = ";".join(fusion.otherann)
+				tmp = []
+				for attr in fusion.zone4_attrs:
+					tmp.append(fusion.__dict__[attr])
+				gene_order.append(" ".join(tmp))
 				if "SameGene" in tmp:
 					type = "SameGene"
 					n_sg += 1
@@ -80,7 +172,7 @@ class CffFileStats():
 				else:
 					print >> sys.stderr, "Fusions without category:", fusion.tostring()
 			if type != "Unknown":
-				print "Fusion", fusion.gene1, fusion.gene2, ",".join(list(set(self.__fusion_samples_dict[key]))), type, ",".join(sorted(list(set(sample_type)))),
+				print "Fusion", fusion.t_gene1, fusion.t_gene2, ",".join(list(set(self.__fusion_samples_dict[key]))), type, ",".join(sorted(list(set(sample_type)))),
 				print "|".join(list(set(gene_order)))
 				print "\tSameGene:", n_sg
 				print "\tReadThrough:", n_rt
@@ -91,38 +183,109 @@ class CffFileStats():
 
 
 class CffFusion():
+	# chr1 pos1 strand1 chr2 pos2 strand2 library sample_name sample_type disease tool split_cnt span_cnt tool_gene1 tool_gene_area1 tool_gene2 tool_gene_area2 fwd_gene_order bwd_gene_order
 	def __init__(self, cff_line):
 		tmp = cff_line.split()
+		# Breadkpoint Zone
 		self.chr1 = tmp[0]
 		self.pos1 = int(tmp[1])
 		self.strand1 = tmp[2]
 		self.chr2 = tmp[3]
 		self.pos2 = int(tmp[4])
 		self.strand2 = tmp[5]
-		self.orf = tmp[6]
-		self.read_through = tmp[7]
-		self.split_cnt = int(tmp[8])
-		self.span_cnt = int(tmp[9]) if tmp[9] != "NA" else tmp[9]
-		self.sample = tmp[10]
-		self.lib = tmp[11]
-		self.tool = tmp[12]
-		self.id = tmp[13]
-		self.score = float(tmp[14]) if tmp[14] != "NA" else tmp[9]
-		self.otherann = tmp[19:]
-		self.gene1 = tmp[15]
-		self.type1 = tmp[16]
-		self.gene2 = tmp[17]
-		self.type2 = tmp[18]
-		self.trans_id1 = "NA"
-		self.trans_id2 = "NA"
-		#self.elements = tmp[0:]
+		# Sample info Zone
+		self.library = tmp[6] # DNA/RNA
+		self.sample_name = tmp[7]
+		self.sample_type = tmp[8] # Tumor/Normal
+		self.disease = tmp[9]
+		# Software Zone
+		self.tool = tmp[10]
+		self.split_cnt = int(tmp[11])
+		self.span_cnt = int(tmp[12]) if tmp[12] != "NA" else tmp[12]
+		self.t_gene1 = tmp[13] # gene reported by tool
+		self.t_area1 = tmp[14] # exon/utr/intron
+		self.t_gene2 = tmp[15]
+		self.t_area2 = tmp[16]
+		# Re-annotation Zone
+		if len(tmp) == 25:
+			self.r_fw_gene_order = tmp[17] # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
+			self.r_fw_gene_type = tmp[18] # re-annotated gene type e.g. CodingGene>>NoncodingGene
+			self.r_fw_gene_index = tmp[19] # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
+			self.r_fw_category = tmp[20] # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
 
+			self.r_bw_gene_order = tmp[21] # backward re-annotation
+			self.r_bw_gene_type = tmp[22] 
+			self.r_bw_gene_index = tmp[23] 
+			self.r_bw_category = tmp[24]
+		else:
+			self.r_fw_gene_order = "NA" # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
+			self.r_fw_gene_type = "NA" # re-annotated gene type e.g. CodingGene>>NoncodingGene
+			self.r_fw_gene_index = "NA" # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
+			self.r_fw_category = "NA" # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
+
+			self.r_bw_gene_order = "NA" # backward re-annotation
+			self.r_bw_gene_type = "NA"
+			self.r_bw_gene_index = "NA"
+			self.r_bw_category = "NA"
+				
+		# same all attrs in a list, for printing	
+		self.zone1_attrs = ["chr1", "pos1", "strand1", "chr2", "pos2", "strand2"]
+		self.zone2_attrs = ["library", "sample_name", "sample_type", "disease"]
+		self.zone3_attrs = ["tool", "split_cnt", "span_cnt", "t_gene1", "t_area1", "t_gene2", "t_area2"]
+		self.zone4_attrs = ["r_fw_gene_order", "r_fw_gene_type", "r_fw_gene_index", "r_fw_category", "r_bw_gene_order", "r_bw_gene_type", "r_bw_gene_index", "r_bw_category"]
+		# format chr
 		if not self.chr1.startswith("chr"):
 			self.chr1 = "chr" + self.chr1
+		if not self.chr2.startswith("chr"):
 			self.chr2 = "chr" + self.chr2
+		# check fields
+		if not self.check_cff():
+			sys.exit(1)
+	# after reannotation, get a list of upstream genes and a list of downstream genes, can be used to compare fusions from different tools on gene leverl
+	def get_reannotated_genes(self, strand):
+		up_genes = []
+		down_genes = []
+		if strand == "fw":
+			gene_order = self.r_fw_gene_order
+		elif strand == "bw":
+			gene_order = self.r_bw_gene_order
+		else:
+			print >> sys.stderr, "Strand has to be fw or bw", strand, "provided."
+			sys.exit(1)
+			
+		#LINC00875_utr5,intron>>NBPF9_intron;LOC100288142_intron;NBPF8_intron    NoncodingGene>>CodingGene,CodingGene,CodingGene >>566_f,525_r,565_f     TruncatedNoncoding
+		if gene_order != "NA":
+			tmp = gene_order.split(">>")
+			for g in tmp[0].split(";"):
+				gname = g.split("_")[0]
+				if g: up_genes.append(gname)
+			for g in tmp[1].split(";"):
+				gname = g.split("_")[0]
+				if g: down_genes.append(gname)
+		
+		if not up_genes:
+			up_genes.append("InterGenic")		
+		if not down_genes:
+			down_genes.append("InterGenic")		
+		return set(up_genes), set(down_genes)
+	def check_cff(self):
+		if self.library not in ["NA", "DNA", "RNA"]:
+			print >> sys.stderr, "Unknown library type:", self.library
+			return False
+		if self.sample_type not in ["NA", "Tumor", "Normal"]:
+			print >> sys.stderr, "Unknown sample type:", self.sample_type
+			return False
+		return True
+
 	def tostring(self):
-		#return " \t".join(self.elements) + "\t" +  self.gene1 + "\t" + self.gene2
-		return "\t".join(map(lambda x:str(x), [self.chr1, self.pos1, self.strand1, self.chr2, self.pos2, self.strand2, self.orf, self.read_through, self.split_cnt, self.span_cnt, self.sample, self.lib, self.tool, self.id, self.score, self.gene1, self.type1, self.gene2, self.type2, "\t".join(self.otherann)]))
+		value = []
+		for attr in self.zone1_attrs + self.zone2_attrs + self.zone3_attrs + self.zone4_attrs:
+			if not attr in self.__dict__:
+				print >> sys.stderr, "Attribute name error:", attr
+				sys.exit(1)
+			else:
+				value.append(self.__dict__[attr])
+		return "\t".join(map(lambda x:str(x), value))
 	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
 	def __check_gene_pairs(self, genes1, genes2, gene_ann):
 		gene_order = []
@@ -145,23 +308,26 @@ class CffFusion():
 			else:
 				type2.append("NoncodingGene")
 
+		list1 = []
+		for gene_name in genes1:
+			tmp = set(genes1[gene_name])
+			list1.append(gene_name + "_" + ",".join(list(tmp)))
+		list2 = []
+		for gene_name in genes2:
+			tmp = set(genes2[gene_name])
+			list2.append(gene_name + "_" + ",".join(list(tmp)))
 		# No driver gene
 		if not genes1:
-			gene_order.append("NoDriverGene")
-			gene_order.extend(["NA"]*3)
+			#gene_order.extend(["NA"]*3)
+			#gene_order.append("NoDriverGene")
+			category = "NoDriverGene"
 		# map to same gene
 		elif common_genes:
-			gene_order.append("SameGene" + "\t" + ",".join(list(common_genes)))
-			gene_order.extend(["NA"]*2)
+			#gene_order.append("SameGene" + "\t" + ",".join(list(common_genes)))
+			#gene_order.extend(["NA"]*3)
+			#gene_order.append("SameGene")
+			category = "SameGene"
 		else:
-			list1 = []
-			for gene_name in genes1:
-				tmp = set(genes1[gene_name])
-				list1.append(gene_name + "_" + ",".join(list(tmp)))
-			list2 = []
-			for gene_name in genes2:
-				tmp = set(genes2[gene_name])
-				list2.append(gene_name + "_" + ",".join(list(tmp)))
 			#gene_order.append(",".join(list(set(genes1))) + ">>" + ",".join(list(set(genes2))))
 
 			# category fusions into: read through, gene fusion, truncated coding, truncated noncoding, nonsense
@@ -186,21 +352,20 @@ class CffFusion():
 
 
 
-			gene_order.append(",".join(list1) + ">>" + ",".join(list2))
-			gene_order.append(",".join(type1) + ">>" + ",".join(type2))
-			gene_order.append(",".join(id1) + ">>" + ",".join(id2))
-			gene_order.append(category)
+		gene_order.append(",".join(list1) + ">>" + ";".join(list2))
+		gene_order.append(",".join(type1) + ">>" + ",".join(type2))
+		gene_order.append(",".join(id1) + ">>" + ",".join(id2))
+		gene_order.append(category)
 
 		return gene_order
 
 	def ann_gene_order(self, gene_ann):
 		gene_order = []
 		# fusion has been annotated
-		if self.otherann:
+		if self.r_fw_category != "NA" or self.r_bw_category !="NA":
 			return gene_order
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
-
 		a = {} # forward strand gene at pos1
 		c = {} # backward strand gene at pos1
 		b = {} # forward strand gene at pos2
@@ -264,6 +429,8 @@ class CffFusion():
 		elif self.strand1 == "-" and self.strand2 == "-":
 			gene_order = self.__check_gene_pairs(c, b, gene_ann)
 			gene_order += self.__check_gene_pairs(d, a, gene_ann)
+		self.r_fw_gene_order, self.r_fw_gene_type, self.r_fw_gene_index, self.r_fw_category, self.r_bw_gene_order, self.r_bw_gene_type, self.r_bw_gene_index, self.r_bw_category = gene_order
+
 		return gene_order
 
 	# realign breakpoints of this fusion to the left most, not finished, how to define "left" when genes are on different chrs 
@@ -835,173 +1002,3 @@ def build_transcript_seq(gene_ann, ref):
 				
 		trans_seqs.setdefault(transcript, "".join(seq))
 	return trans_seqs
-### old code	
-# load bed format gene annotations as an dict based index
-def load_gene_bed(bed_file):
-	
-	dict_starts = {}
-	dict_genes = {}
-	for line in open(bed_file, "r"):
-		tmp = line.split()
-		chr = tmp[0]
-		start = int(tmp[1]) + 1 # bed coordinate is 0-based
-		end = int(tmp[2])
-		transcript = tmp[3]
-		type = tmp[4]
-		id = int(tmp[5])
-		strand = tmp[6]
-		gene = tmp[7]
-
-
-		tuple = (start, end, transcript, type, id, strand, gene)
-		dict_genes.setdefault(chr, []).append(tuple)
-	# sort all ann of each chr by start pos
-	for chr in dict_genes:
-		dict_genes[chr] = sorted(dict_genes[chr], key=lambda d:int(d[0]))
-		# save start pos in dict_starts
-		dict_starts[chr] = [int(tuple[0]) for tuple in dict_genes[chr]]
-	return dict_starts, dict_genes
-
-# check if there are indels/clippings in cigar
-def has_indels_or_clippings(cigar):
-	for s in ["S","H","I","D","N"]:
-		if s in cigar:
-			return True
-	return False
-
-def print_read(read, type, outf):
-	if not type in ["sam", "fq", "fa"]:
-		print >> sys.stderr, "Unknown output type:", type
-		sys.exit(1)
-	name = read.query_name
-	seq = read.query_sequence
-	qual = "I" * len(seq) ## pysam provides number format qualities, to be fixed
-	if read.is_reverse:
-		seq = rc_seq(seq)
-
-	if type == "sam":
-		print read.tostring(samfile),
-	elif type == "fq":
-		print >> outf, "@"+name
-		print >> outf, seq
-		print >> outf, "+"
-		print >> outf, qual
-	elif type == "fa":
-		print >> outf, ">" + name
-		print >> outf, seq
-	#print read.tostring(samfile),
-
-
-# each read_list contains all reads (i.e. all alingments of a read pair) with the same name, descide whether to output this pair
-def map_pos_to_genes_bak(read):
-	matched_genes = []
-	chr = "chr" + read.reference_name
-	if not chr in dict_starts:
-		return matched_genes
-	pos = read.reference_start + 1 # reference_start is 0-based
-	idx = bisect.bisect(dict_starts[chr], pos)	
-	while 0 < idx < len(dict_starts[chr]):
-		#tuple structure: tuple = (start, end, transcript, type, id, strand, gene)
-		#tuple = dict_genes[chr][idx-1]
-		#start = tuple[0]
-		bpann = dict_genes[chr][idx-1]
-		start = bpann.start
-
-		#check within a limited region (100000)
-		if pos - start > 100000: 
-			break
-
-		if bpann.start <= pos <= bpann.end:
-			matched_genes.append(bpann)
-			idx -= 1
-		else:
-			break
-	return matched_genes
-
-def is_concordant(read1, read2):
-	if read1.reference_name == read2.reference_name and \
-		((read1.reference_start < read2.reference_start and not read1.is_reverse and read2.is_reverse) or \
-		(read2.reference_start <= read1.reference_start and not read2.is_reverse and read1.is_reverse)):
-		return True
-	else:
-		return False
-def filter_read(read_list, dict_starts, dict_genes, outf_1, outf_2): 
-	if len(read_list) == 0:
-		return
-
-	read1 = ""
-	read2 = ""
-
-	f_unmap = False	# either read unmapped
-	f_mapq = False	# either mapq == 60
-	f_cigar = False	# no indel/clippings in cigar
-	f_mismatch = False # miscmatch <= 1 
-	f_gene = False	# both reads mapped to exon/utr
-	f_concordant = False # check strand and order, not insert size
-	n = 0
-	for read in read_list:
-		if read.is_secondary or read.is_supplementary:
-			continue
-		else:
-			if read.is_read1:
-				n += 1
-				read1 = read
-			else:
-				n += 10
-				read2 = read
-	if n != 11:
-		#print >> sys.stderr, "Read name", read1.query_name, "contians", n, "reads."
-		print >> sys.stderr, "err1", str(read_list)
-		sys.exit(1)
-#	if read1 == "" or len(read2) == "":
-		#print >> sys.stderr, "Read name ", read1.query_name, " is not paired."
-#		print >> sys.stderr, "err2", str(read_list)
-#		sys.exit(1)
-	#either or both reads unaligned
-	if read1.is_unmapped or read2.is_unmapped:
-		f_unmap = True
-	else:
-		# either read contains >1 mismatch
-		if read1.get_tag("NM") > 1 or read2.get_tag("NM") > 1:
-			f_mismatch = True
-		# both reads uniquely aligned
-		if read1.mapping_quality == 60 and read2.mapping_quality == 60:
-			f_mapq = True
-		# both reads mapped continuously
-		if (has_indels_or_clippings(read1.cigarstring) or has_indels_or_clippings(read2.cigarstring)):
-			f_cigar = True
-		
-		# read pair mapped discordantly (strand and order)
-		
-		if not is_concordant(read1, read2):
-			f_concordant = True
-
-		# either read not mapped to exons/utrs
-		matched_genes1 = set([g[6] for g in map_pos_to_genes(read1)])
-		matched_genes2 = set([g[6] for g in map_pos_to_genes(read2)])
-		
-		if len(matched_genes1) == 0 or len(matched_genes2) == 0:
-			f_gene = True
-		elif len(matched_genes1.intersection(matched_genes2)) == 0:
-			#print "set1", matched_genes1
-			#print "set2", matched_genes2
-			#print_read(read1, "sam", "")
-			#print_read(read2, "sam", "")
-			f_gene = True
-	'''		
-	print read1.cigarstring, read2.cigarstring
-	print "f_unmap:", f_unmap
-	print "f_mapq:", f_mapq
-	print "f_cigar:", f_cigar
-	print "f_gene:", f_gene
-	print "f_mismatch:", f_mismatch
-	'''
-	if f_unmap or (f_mapq and (f_cigar or f_gene or f_mismatch or f_concordant)):
-		print_read(read1, "fq", outf_1)
-		print_read(read2, "fq", outf_2)
-
-	#q = pybedtools.create_interval_from_list(["chr" + read1.reference_name, str(read.query_alignment_start), str(read.query_alignment_start)])
-	#print(exon_bed_intervals.any_hits(q))
-	#print(exon_bed_intervals.all_hits(q))
-	
-#print  >> sys.stderr, "load_gene_model"
