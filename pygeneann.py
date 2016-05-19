@@ -5,10 +5,12 @@ import pysam
 import bisect
 import time
 import sequtils
+import copy
 print >> sys.stderr, "Version 0.2"
 class GeneBed():
 	def __init__(self, bed_line):
 		tmp = bed_line.split()
+		self.bed_line = bed_line.strip()
 		self.chr = tmp[0]
 		self.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
 		self.end = int(tmp[2])		# start and end are first and last base of each segment
@@ -18,8 +20,8 @@ class GeneBed():
 		self.strand = tmp[6]
 		self.gene_name = tmp[7]
 		self.gene_id = tmp[8]
-	def __tostring__(self):
-		return bed_line.strip()
+	def tostring(self):
+		return self.bed_line
 class CffFusionStats():
 	__fusion_dict = {}
 	__fusion_samples_dict = {}
@@ -40,53 +42,119 @@ class CffFusionStats():
 	
 	# compare two fusions based on the up/downstream gene sets, if overlap on both sets consider them as same fusion
 	def is_same_gene_pair_fusion(self, fusion1, fusion2):
-		strand = "fw" 
+		id = 1 
 		# compare gene sets on fw strand 
-		up_g1, down_g1 = set(fusion1.get_reannotated_genes(strand))
-		up_g2, down_g2 = set(fusion2.get_reannotated_genes(strand))
+		up_g1, down_g1 = set(fusion1.get_reannotated_genes(id))
+		up_g2, down_g2 = set(fusion2.get_reannotated_genes(id))
 
 		if up_g1 & up_g2 and down_g1 & down_g2:
 			return True
 
-		strand = "bw" 
+		id = 2 
 		# compare gene sets on bw strand 
-		up_g1, down_g1 = set(fusion1.get_reannotated_genes(strand))
-		up_g2, down_g2 = set(fusion2.get_reannotated_genes(strand))
+		up_g1, down_g1 = set(fusion1.get_reannotated_genes(id))
+		up_g2, down_g2 = set(fusion2.get_reannotated_genes(id))
 
 		if up_g1 & up_g2 and down_g1 & down_g2:
 			return True
 
 		return False
+	# compare gene fusions based on breakpoints
 	def generate_common_fusion_stats(self, cff_file):
+		fusion_bp_dict = {}
+		fusion_pos1_idx_dict = {}
+		# build index for fusions based on fusion.pos1
+		for line in  open(cff_file, "r"):
+			if line.startswith("#"):
+				continue
+			fusion = CffFusion(line)
+			fusion_bp_dict.setdefault(fusion.chr1, {}).setdefault(fusion.strand1, []).append(fusion)
+		for chr in fusion_bp_dict:
+			for strand in fusion_bp_dict[chr]:
+				fusion_bp_dict[chr][strand].sort(key = lambda x:x.pos1)	
+				fusion_pos1_idx_dict.setdefault(chr, {}).setdefault(strand, [f.pos1 for f in fusion_bp_dict[chr][strand]]) 
+		# find common fusions
+	# output fusions in a fusion list as clustered fusions
+	def output_clustered_fusions(self, fusion_list, cluster_type):	
+			sample_list = [f.sample_name for f in fusion_list]	
+			disease_list = [f.disease for f in fusion_list]	
+			tool_list = [f.tool for f in fusion_list]	
+			sample_type_list = [f.sample_type for f in fusion_list]	
+
+			category_list = [f.reann_category1 for f in fusion_list]	
+			category_list += [f.reann_category2 for f in fusion_list]	
+			gene_order_list = [f.reann_gene_order1 for f in fusion_list]
+			gene_order_list += [f.reann_gene_order2 for f in fusion_list]
+			print cluster_type, ",".join(list(set(sample_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), ";".join(list(set(gene_order_list)))
+	# cluster fusions of "NoDriverGene" and "Truncated" type on their breakpoints
+	def generate_common_fusion_stats_by_breakpoints(self, fusion_list):
+		diff = 100000
+		# save clustered fusion id, skip a fusion when it is already clustered
+		clustered_id = {}
+		print >> sys.stderr, "bp fusion list:", len(fusion_list)
+		for i in range(len(fusion_list)):
+			if i in clustered_id:
+				continue
+
+			#if i % 100 == 0: print >> sys.stderr, i
+
+			fusion1 = fusion_list[i]
+			small_bp1, big_bp1 = fusion1.get_ordered_breakpoints()
+			clustered_id.setdefault(i, i)
+			fusion_cluster_list = []
+			fusion_cluster_list.append(fusion1)
+			for j in range(len(fusion_list)):
+				if j in clustered_id:
+					continue
+				if i == j:
+					continue
+
+				fusion2 = fusion_list[j]
+				small_bp2, big_bp2 = fusion2.get_ordered_breakpoints()
+				if cmp_fusion_breakpoints(small_bp1, small_bp2, diff) and cmp_fusion_breakpoints(big_bp1, big_bp2, diff):
+					clustered_id.setdefault(j, j)
+					fusion_cluster_list.append(fusion2)
+
+			self.output_clustered_fusions(fusion_cluster_list, "BP_Cluster")
+				
+
+	# compare gene fusions based on re-annotated gene names, hard to work for truncated fusions, used generate_common_fusion_stats_by_breakpoints for NoDriverGenes and Trucated type fusions
+	def generate_common_fusion_stats_by_genes(self, cff_file):
 		fusion_dict = {}
-		common_key_dict = {}	
+		fusion_list_for_bp_cmp = []
+		common_key_dict = {}
 		for line in  open(cff_file, "r"):
 			if line.startswith("#"):
 				continue
 			fusion = CffFusion(line)
 			keys = set()
-			strand = "fw"
-			if fusion.r_fw_category not in ["SameGene", "NoDriverGene"]:
-				up_g, down_g = fusion.get_reannotated_genes(strand)
+			found = False # found both up/down stream genes
+			id = 1
+			if fusion.reann_category1 not in ["SameGene", "NoDriverGene"]:
+				up_g, down_g = fusion.get_reannotated_genes(id)
 				for g1 in up_g:
 					for g2 in down_g:
-						key = g1 + "_" + g2 + "_" + strand
+						key = g1 + "_" + g2 
 						keys.add(key)
 						fusion_dict.setdefault(key, []).append(fusion)
-			strand = "bw"
-			if fusion.r_bw_category not in ["SameGene", "NoDriverGene"]:
-				up_g, down_g = fusion.get_reannotated_genes(strand)
+						found = True
+			id = 2
+			if fusion.reann_category2 not in ["SameGene", "NoDriverGene"]:
+				up_g, down_g = fusion.get_reannotated_genes(id)
 				for g1 in up_g:
 					for g2 in down_g:
-						key = g1 + "_" + g2 + "_" + strand
+						key = g1 + "_" + g2 
 						keys.add(key)
 						fusion_dict.setdefault(key, []).append(fusion)
+						found = True
+			
+			if not found:
+				fusion_list_for_bp_cmp.append(fusion)
 			# for breakpoints that can be mapped to multiple genes pairs, save these pairs in a dict, merge their fusion lists when output
 			if len(keys) > 1:
 				for key in keys:
 					if key in common_key_dict:
 						common_key_dict[key] |= keys
-						found = True
 					else:
 						common_key_dict[key] = keys
 		removed_keys = {} 
@@ -110,22 +178,21 @@ class CffFusionStats():
 				for key2 in key_set:
 					fusion_list += fusion_dict[key2]
 					removed_keys.setdefault(key2, key2)	
-
+			self.output_clustered_fusions(fusion_list, "Gene_Cluster")
+			'''
 			sample_list = [f.sample_name for f in fusion_list]	
 			disease_list = [f.disease for f in fusion_list]	
 			tool_list = [f.tool for f in fusion_list]	
 			sample_type_list = [f.sample_type for f in fusion_list]	
-			if key.endswith("fw"):
-				category_list = [f.r_fw_category for f in fusion_list]	
-				gene_order_list = [f.r_fw_gene_order for f in fusion_list]
-			elif key.endswith("bw"):
-				category_list = [f.r_bw_category for f in fusion_list]	
-				gene_order_list = [f.r_bw_gene_order for f in fusion_list]
-			else:
-				print  >> sys.stderr, "Key Error:", key
-				sys.exit(1)
+
+			category_list = [f.reann_category1 for f in fusion_list]	
+			category_list += [f.reann_category2 for f in fusion_list]	
+			gene_order_list = [f.reann_gene_order1 for f in fusion_list]
+			gene_order_list += [f.reann_gene_order2 for f in fusion_list]
 			print key, ",".join(list(set(sample_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), ",".join(list(set(gene_order_list)))
-				
+			'''
+		# send "NoDriverGene" and "Truncated" type fusions for breakpoint cluster
+		self.generate_common_fusion_stats_by_breakpoints(fusion_list_for_bp_cmp)		
 	def get_gene_order_stats(self):
 		for key in self.__fusion_dict:
 			n_sg = 0 # same gene
@@ -208,31 +275,31 @@ class CffFusion():
 		self.t_area2 = tmp[16]
 		# Re-annotation Zone
 		if len(tmp) == 25:
-			self.r_fw_gene_order = tmp[17] # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
-			self.r_fw_gene_type = tmp[18] # re-annotated gene type e.g. CodingGene>>NoncodingGene
-			self.r_fw_gene_index = tmp[19] # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
-			self.r_fw_category = tmp[20] # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
+			self.reann_gene_order1 = tmp[17] # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
+			self.reann_gene_type1 = tmp[18] # re-annotated gene type e.g. CodingGene>>NoncodingGene
+			self.reann_gene_index1 = tmp[19] # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
+			self.reann_category1 = tmp[20] # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
 
-			self.r_bw_gene_order = tmp[21] # backward re-annotation
-			self.r_bw_gene_type = tmp[22] 
-			self.r_bw_gene_index = tmp[23] 
-			self.r_bw_category = tmp[24]
+			self.reann_gene_order2 = tmp[21] # backward re-annotation
+			self.reann_gene_type2 = tmp[22] 
+			self.reann_gene_index2 = tmp[23] 
+			self.reann_category2 = tmp[24]
 		else:
-			self.r_fw_gene_order = "NA" # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
-			self.r_fw_gene_type = "NA" # re-annotated gene type e.g. CodingGene>>NoncodingGene
-			self.r_fw_gene_index = "NA" # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
-			self.r_fw_category = "NA" # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
+			self.reann_gene_order1 = "NA" # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
+			self.reann_gene_type1 = "NA" # re-annotated gene type e.g. CodingGene>>NoncodingGene
+			self.reann_gene_index1 = "NA" # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
+			self.reann_category1 = "NA" # infered fusion type, ReadThrough, GeneFusion, TruncatedCoding, TruncatedNoncoding, Nosenes, SameGene
 
-			self.r_bw_gene_order = "NA" # backward re-annotation
-			self.r_bw_gene_type = "NA"
-			self.r_bw_gene_index = "NA"
-			self.r_bw_category = "NA"
+			self.reann_gene_order2 = "NA" # backward re-annotation
+			self.reann_gene_type2 = "NA"
+			self.reann_gene_index2 = "NA"
+			self.reann_category2 = "NA"
 				
 		# same all attrs in a list, for printing	
 		self.zone1_attrs = ["chr1", "pos1", "strand1", "chr2", "pos2", "strand2"]
 		self.zone2_attrs = ["library", "sample_name", "sample_type", "disease"]
 		self.zone3_attrs = ["tool", "split_cnt", "span_cnt", "t_gene1", "t_area1", "t_gene2", "t_area2"]
-		self.zone4_attrs = ["r_fw_gene_order", "r_fw_gene_type", "r_fw_gene_index", "r_fw_category", "r_bw_gene_order", "r_bw_gene_type", "r_bw_gene_index", "r_bw_category"]
+		self.zone4_attrs = ["reann_gene_order1", "reann_gene_type1", "reann_gene_index1", "reann_category1", "reann_gene_order2", "reann_gene_type2", "reann_gene_index2", "reann_category2"]
 		# format chr
 		if not self.chr1.startswith("chr"):
 			self.chr1 = "chr" + self.chr1
@@ -241,16 +308,108 @@ class CffFusion():
 		# check fields
 		if not self.check_cff():
 			sys.exit(1)
+	def get_gene_names_from_gene_order(self):
+		g1 = []
+		g2 = []
+		g3 = []
+		g4 = []
+		if self.reann_gene_order1 != "NA":
+			tmp = self.reann_gene_order1.split(">>")
+			tmp2 = tmp[0].split(";")
+			for t2 in tmp2:
+				tmp3 = t2.split("_")
+				g1.append(tmp3[0])
+			tmp2 = tmp[1].split(";")
+			for t2 in tmp2:
+				tmp3 = t2.split("_")
+				g2.append(tmp3[0])
+			
+			
+		if self.reann_gene_order2 != "NA":
+			tmp = self.reann_gene_order2.split(">>")
+			tmp2 = tmp[0].split(";")
+			for t2 in tmp2:
+				tmp3 = t2.split("_")
+				g3.append(tmp3[0])
+			tmp2 = tmp[1].split(";")
+			for t2 in tmp2:
+				tmp3 = t2.split("_")
+				g4.append(tmp3[0])
+		
+		return g1, g2, g3, g4		
+
+	def __test_prefered_gene(self, genes, gene_name_list):
+		prefered_gene = ""
+		for gene in genes:
+			if gene.gene_name in gene_name_list:
+				if not prefered_gene:
+					prefered_gene = gene
+				else:
+					if gene.type == "cds":
+						prefered_gene = gene
+						break
+					elif gene.type == "intron" and prefered_gene != "cds":
+						prefered_gene = gene
+						
+		return prefered_gene		
+			
+	# among all the re-annotated genes, return a prefered one which should be: 1. breakpoint in/on exon. 2. if not, has a exon closest to breakpoint. 3. the longest isoform.
+	# Not finished, needs to consider
+	def get_perfered_ann(self, gene_ann):
+		print >> sys.stderr,  "Not finished."
+		return
+		genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
+		genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
+		# get gene name list from re-annotated gene orders
+		g1, g2, g3, g4 = self.get_gene_names_from_gene_order()
+		
+		prefered_gene1 = self.__test_prefered_gene(genes1, g1)
+		prefered_gene2 = self.__test_prefered_gene(genes2, g2)
+		# try the opposite, because breakpoints order are not always consistant with gene orders
+		if not (prefered_gene1 and prefered_gene2):
+			prefered_gene1 = self.__test_prefered_gene(genes1, g2)
+			prefered_gene2 = self.__test_prefered_gene(genes2, g1)
+			
+		prefered_gene3 = self.__test_prefered_gene(genes1, g3)
+		prefered_gene4 = self.__test_prefered_gene(genes2, g4)
+			
+		if not (prefered_gene3 and prefered_gene4):
+			prefered_gene3 = self.__test_prefered_gene(genes1, g4)
+			prefered_gene4 = self.__test_prefered_gene(genes2, g3)
+		
+		print self.tostring()
+		if prefered_gene1 and prefered_gene2:
+			print "\t" + prefered_gene1.tostring()
+			print "\t" + prefered_gene2.tostring()
+		elif prefered_gene3 and prefered_gene4:		
+			print "\t" + prefered_gene3.tostring()
+			print "\t" + prefered_gene4.tostring()
+		else:
+			print "No prefered genes."
+		
+	# compare fusion breakpoints and return in an order of smaller to  bigger
+	def get_ordered_breakpoints(self):
+		if self.chr1 < self.chr1:
+			small_bp = (self.chr1, self.pos1, self.strand1)
+			big_bp = (self.chr2, self.pos2, self.strand2)
+		elif self.chr1 == self.chr1 and self.pos1 < self.pos2:
+			small_bp = (self.chr1, self.pos1, self.strand1)
+			big_bp = (self.chr2, self.pos2, self.strand2)
+		else:
+			small_bp = (self.chr2, self.pos2, self.strand2)
+			big_bp = (self.chr1, self.pos1, self.strand1)
+		return small_bp, big_bp	
+				
 	# after reannotation, get a list of upstream genes and a list of downstream genes, can be used to compare fusions from different tools on gene leverl
-	def get_reannotated_genes(self, strand):
+	def get_reannotated_genes(self, id):
 		up_genes = []
 		down_genes = []
-		if strand == "fw":
-			gene_order = self.r_fw_gene_order
-		elif strand == "bw":
-			gene_order = self.r_bw_gene_order
+		if id == 1:
+			gene_order = self.reann_gene_order1
+		elif id == 2:
+			gene_order = self.reann_gene_order2
 		else:
-			print >> sys.stderr, "Strand has to be fw or bw", strand, "provided."
+			print >> sys.stderr, "Strand has to be 1 or 2", id, "provided."
 			sys.exit(1)
 			
 		#LINC00875_utr5,intron>>NBPF9_intron;LOC100288142_intron;NBPF8_intron    NoncodingGene>>CodingGene,CodingGene,CodingGene >>566_f,525_r,565_f     TruncatedNoncoding
@@ -334,9 +493,10 @@ class CffFusion():
 			if "CodingGene" in type1 and "CodingGene" in type2:
 				for id in id1:
 					tmp = id.split("_")
-					id = int(tmp[0])
+					idx = int(tmp[0])
 					strand = tmp[1]
-					if (strand == "f" and  str(id+1) + "_f" in id2 ) or (strand == "r" and  str(id-1) + "_r" in id2):
+					#ReadThrough: gene1 and gene2 are adjacent genes (id1 - id2 = 1) or overlapping genes (id1 = id2) but breakpoints cannot map to same gene
+					if (strand == "f" and  str(idx+1) + "_f" in id2 ) or (strand == "r" and  str(idx-1) + "_r" in id2) or (id in id2):
 						category = "ReadThrough"
 					else:
 						category = "GeneFusion"
@@ -358,14 +518,19 @@ class CffFusion():
 		gene_order.append(category)
 
 		return gene_order
-
+	# based on given gene annotations re-annotate cff fusions, infer possible up/downstream genens, try to fill in strand if info missing
 	def ann_gene_order(self, gene_ann):
 		gene_order = []
 		# fusion has been annotated
-		if self.r_fw_category != "NA" or self.r_bw_category !="NA":
+		if self.reann_category1 != "NA" or self.reann_category2 !="NA":
 			return gene_order
+		
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
+		for g in matched_genes1:
+			print "1:", g.tostring()
+		for g in matched_genes2:
+			print "2:", g.tostring()
 		a = {} # forward strand gene at pos1
 		c = {} # backward strand gene at pos1
 		b = {} # forward strand gene at pos2
@@ -385,12 +550,12 @@ class CffFusion():
 			gene_interval1 = ""
 			gene_interval2 = ""
 			for sep in [",", "/"]:
-				for gene_name in (self.gene1).split(sep):
+				for gene_name in (self.t_gene1).split(sep):
 					if not gene_interval1:
 						gene_interval1 = gene_ann.get_gene_interval(gene_name)
 					else:
 						break
-				for gene_name in (self.gene2).split(sep):
+				for gene_name in (self.t_gene2).split(sep):
 					if not gene_interval2:
 						gene_interval2 = gene_ann.get_gene_interval(gene_name)
 					else:
@@ -416,7 +581,7 @@ class CffFusion():
 				return gene_order
 
 				
-				
+		# gene_order includes: 5' gene >> 3' gene, 5' gene type >> 3' gene type, 5' coding gene idx >> 3' coding gene inx, category
 		if self.strand1 == "+" and self.strand2 == "+":
 			gene_order = self.__check_gene_pairs(a, d, gene_ann)
 			gene_order += self.__check_gene_pairs(b, c, gene_ann)
@@ -429,7 +594,7 @@ class CffFusion():
 		elif self.strand1 == "-" and self.strand2 == "-":
 			gene_order = self.__check_gene_pairs(c, b, gene_ann)
 			gene_order += self.__check_gene_pairs(d, a, gene_ann)
-		self.r_fw_gene_order, self.r_fw_gene_type, self.r_fw_gene_index, self.r_fw_category, self.r_bw_gene_order, self.r_bw_gene_type, self.r_bw_gene_index, self.r_bw_category = gene_order
+		self.reann_gene_order1, self.reann_gene_type1, self.reann_gene_index1, self.reann_category1, self.reann_gene_order2, self.reann_gene_type2, self.reann_gene_index2, self.reann_category2 = gene_order
 
 		return gene_order
 
@@ -488,7 +653,7 @@ class GeneIntervals():
 		else:
 			# warnning when same gene on different chr/strand, load  the first annotation
 			if len(set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])) > 1:
-				print >> sys.stderr, "Warnning: GeneBed annotation includes multiple genes."
+				print >> sys.stderr, "Warnning: GeneBed annotation includes multiple genes. Only the first annotation will be used."
 				print >> sys.stderr, set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])
 				#sys.exit(1)
 			self.gene_name = bed_ann_list[0].gene_name
@@ -501,7 +666,7 @@ class GeneIntervals():
 				
 	
 	def overlap(self, interval2):
-		if self.chr == interval2.chr and min(self.end, interval2.end) - max(self.start, interval2.end) > 0:
+		if self.chr == interval2.chr and min(self.end, interval2.end) - max(self.start, interval2.start) > 0:
 			return True
 		else:
 			return False
@@ -511,8 +676,17 @@ class GeneIntervals():
 			print >> sys.stderr, self.gene_name, interval2.gene_name
 			return self
 		else:
-			new_interval = GeneIntervals("Merged_" + self.gene_name + "_" + interval2.gene_name, self.chr, min(self,start, interval2.start), max(self.end, interval2.end), self.strand, False)
+			#new_interval = GeneIntervals("Merged_" + self.gene_name + "_" + interval2.gene_name, self.chr, min(self,start, interval2.start), max(self.end, interval2.end), self.strand, False)
+			new_interval = copy.copy(interval2)
+			new_interval.gene_name = "Merged_" + self.gene_name + "_" + interval2.gene_name
+			new_interval.chr =  self.chr
+			new_interval.start =  min(self.start, interval2.start)
+			new_interval.end =  max(self.end, interval2.end)
+			new_interval.strand = self.strand
+			new_interval.is_coding = False
+			
 			return new_interval			
+# Deprecated, use GeneBed instead
 class BreakpointAnnotation:
 	#tuple = (chr, start, end, transcript, type, idx, strand, gene_name)
 	def __init__(self, chr, start, end, transcript_name, type, idx, strand, gene_name):
@@ -634,7 +808,9 @@ class GeneAnnotation():
 					pre_interval_r = interval
 					i_r += 1
 				self.__gene_name_idx_map.setdefault(interval.gene_name, str(i_r) + "_" + interval.strand)
-
+	def print_coding_gene_idx(self):
+		for key in self.__gene_name_idx_map:
+			print key, self.__gene_name_idx_map[key]
 	# whether a gene include coding exon (cds)
 	def is_coding(self, gene_name):
 		return self.__gene_intervals[gene_name].is_coding
@@ -704,7 +880,7 @@ class GeneAnnotation():
 			return matched_genes
 		idx = bisect.bisect(self.__gene_starts[chr], pos)	
 		while 0 < idx <= len(self.__gene_starts[chr]):
-			#bpann is an BreakpointAnnotation object
+			#bpann is an GeneBed object
 			bpann = self.__genes[chr][idx-1]
 			#search within a limited region (default 1000000)
 			if pos - bpann.start > self.__max_diff: 
@@ -738,7 +914,7 @@ class GeneAnnotation():
 					for i in range(idx, min(idx+100, len(self.__gene_starts[chr]))):
 						adjacent_bpann = self.__genes[chr][i]
 						# in next 100 annotations, try to find one exon next to current intron of the same transcript
-						if bpann.transcript_name == adjacent_bpann.transcript_name and adjacent_bpann.type == "cds" and abs(adjacent_bpann.idx - bpann.idx) <= 3:
+						if bpann.transcript_id == adjacent_bpann.transcript_id and adjacent_bpann.type == "cds" and abs(adjacent_bpann.idx - bpann.idx) <= 1:
 							next_exons.append(adjacent_bpann)
 							#break
 							#if bpann.strand == "f":
@@ -750,7 +926,7 @@ class GeneAnnotation():
 					for i in range(idx-2, max(0, idx-100), -1):
 						adjacent_bpann = self.__genes[chr][i]
 						# in next 100 annotations, try to find one exon next to current intron of the same transcript
-						if bpann.transcript_name == adjacent_bpann.transcript_name and adjacent_bpann.type == "cds" and abs(adjacent_bpann.idx - bpann.idx) <= 3:
+						if bpann.transcript_id == adjacent_bpann.transcript_id and adjacent_bpann.type == "cds" and abs(adjacent_bpann.idx - bpann.idx) <= 1:
 							previous_exons.append(adjacent_bpann)
 							#break
 							#if bpann.strand == "r":
@@ -889,7 +1065,16 @@ class GeneFusions():
 		self.output_recurrent_genes()
 		
 		
+def cmp_fusion_breakpoints(bp1, bp2, diff):
+	chr1, pos1, strand1 = bp1
+	chr2, pos2, strand2 = bp2
 			
+	if chr1 != chr2 or strand1 != strand2:
+		return False
+	elif abs(pos1 - pos2) < diff:
+		return True
+	else:
+		return False	
 #compare two genomic locations, return True if the difference is samller than parameter diff		
 def cmp_breakpoints(chr1, pos1, chr2, pos2, diff):
 	if chr1 != chr2:
