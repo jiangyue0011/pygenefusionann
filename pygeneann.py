@@ -15,11 +15,16 @@ class GeneBed():
 		self.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
 		self.end = int(tmp[2])		# start and end are first and last base of each segment
 		self.transcript_id = tmp[3]
-		self.type = tmp[4]
+		self.type = tmp[4] # utr/intron/cds
 		self.idx = int(tmp[5])
 		self.strand = tmp[6]
 		self.gene_name = tmp[7]
 		self.gene_id = tmp[8]
+		# the following two attr are only used for breakpoint annotation, tell whether current breakpoint on/close to boundary, need to reset everytime before used
+		self.is_on_boudary = False
+		self.close_to_boundary = False
+		# in gene intervals, this gene includes annotations from different chr, strand or >5Mb distance
+		self.is_from_contradictory_gene = False
 	def tostring(self):
 		return self.bed_line
 class CffFusionStats():
@@ -274,7 +279,7 @@ class CffFusion():
 		self.t_gene2 = tmp[15]
 		self.t_area2 = tmp[16]
 		# Re-annotation Zone
-		if len(tmp) == 25:
+		if len(tmp) >= 25:
 			self.reann_gene_order1 = tmp[17] # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
 			self.reann_gene_type1 = tmp[18] # re-annotated gene type e.g. CodingGene>>NoncodingGene
 			self.reann_gene_index1 = tmp[19] # gene index for read-through inference e.g. 7409_r>>9974_r, only valid for coding gene
@@ -284,6 +289,7 @@ class CffFusion():
 			self.reann_gene_type2 = tmp[22] 
 			self.reann_gene_index2 = tmp[23] 
 			self.reann_category2 = tmp[24]
+
 		else:
 			self.reann_gene_order1 = "NA" # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
 			self.reann_gene_type1 = "NA" # re-annotated gene type e.g. CodingGene>>NoncodingGene
@@ -294,7 +300,7 @@ class CffFusion():
 			self.reann_gene_type2 = "NA"
 			self.reann_gene_index2 = "NA"
 			self.reann_category2 = "NA"
-				
+		self.boundary_info = ""		
 		# same all attrs in a list, for printing	
 		self.zone1_attrs = ["chr1", "pos1", "strand1", "chr2", "pos2", "strand2"]
 		self.zone2_attrs = ["library", "sample_name", "sample_type", "disease"]
@@ -444,7 +450,7 @@ class CffFusion():
 				sys.exit(1)
 			else:
 				value.append(self.__dict__[attr])
-		return "\t".join(map(lambda x:str(x), value))
+		return "\t".join(map(lambda x:str(x), value)) + "\t" + self.boundary_info
 	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
 	def __check_gene_pairs(self, genes1, genes2, gene_ann):
 		gene_order = []
@@ -470,10 +476,14 @@ class CffFusion():
 		list1 = []
 		for gene_name in genes1:
 			tmp = set(genes1[gene_name])
+			if gene_ann.is_contradictory(gene_name):
+				gene_name += "(Cont)"
 			list1.append(gene_name + "_" + ",".join(list(tmp)))
 		list2 = []
 		for gene_name in genes2:
 			tmp = set(genes2[gene_name])
+			if gene_ann.is_contradictory(gene_name):
+				gene_name += "(Cont)"
 			list2.append(gene_name + "_" + ",".join(list(tmp)))
 		# No driver gene
 		if not genes1:
@@ -527,10 +537,7 @@ class CffFusion():
 		
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
-		for g in matched_genes1:
-			print "1:", g.tostring()
-		for g in matched_genes2:
-			print "2:", g.tostring()
+		
 		a = {} # forward strand gene at pos1
 		c = {} # backward strand gene at pos1
 		b = {} # forward strand gene at pos2
@@ -595,39 +602,91 @@ class CffFusion():
 			gene_order = self.__check_gene_pairs(c, b, gene_ann)
 			gene_order += self.__check_gene_pairs(d, a, gene_ann)
 		self.reann_gene_order1, self.reann_gene_type1, self.reann_gene_index1, self.reann_category1, self.reann_gene_order2, self.reann_gene_type2, self.reann_gene_index2, self.reann_category2 = gene_order
-
+		
+		# check whether pos on mapped genes boundaries
+		on_boundary1 = False
+		close_to_boundary1 = False
+		on_boundary2 = False
+		close_to_boundary2 = False
+		for gene in matched_genes1:
+			if not gene.type == "cds":
+				break
+			if gene.is_on_boundary:
+				on_boundary1 = True
+				close_to_boundary1 = True
+				break
+			if gene.close_to_boundary:
+				close_to_boundary1 = True
+		for gene in matched_genes2:
+			if not gene.type == "cds":
+				break
+			if gene.is_on_boundary:
+				on_boundary2 = True
+				close_to_boundary2 = True
+				break
+			if gene.close_to_boundary:
+				close_to_boundary2 = True
+		self.boundary_info = "\t".join(map(str, [on_boundary1, close_to_boundary1, on_boundary2, close_to_boundary2]))
+		gene_order += [on_boundary1, close_to_boundary1, on_boundary2, close_to_boundary2]
 		return gene_order
 
 	# realign breakpoints of this fusion to the left most, not finished, how to define "left" when genes are on different chrs 
-	def left_aln_fusion_bp(self, ref_file):
-		rlen = 100
-		refs = pysam.FastaFile(ref_file)
-
+	def left_aln_fusion_bp(self, refs):
+		# provided reference file lacks fusion chr
+		if not (self.chr1 in refs.references and self.chr2 in refs.references):
+			return (-1, -1)
+		rlen = 10
+		#refs = pysam.FastaFile(ref_file)
+		
 		#pysam use 0-based coordinates, cff use 1-based coordinates
 		if self.strand1 == "+" and self.strand2 == "+":
-			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1), "r")
-			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2, self.pos2+rlen), "c")
+			#up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1+rlen), "r")
+			#down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen, self.pos2+rlen), "c")
+			up_seq = refs.fetch(self.chr1, self.pos1-rlen, self.pos1+rlen)
+			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen, self.pos2+rlen), "rc")
 		elif self.strand1 == "+" and  self.strand2 == "-":
-			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1), "r")
-			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1), "r")
+			#up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1+rlen), "r")
+			#down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1+rlen), "r")
+			up_seq = refs.fetch(self.chr1, self.pos1-rlen, self.pos1+rlen)
+			down_seq = refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1+rlen)
 		elif self.strand1 == "-" and  self.strand2 == "+":
-			up_seq = refs.fetch(self.chr1, self.pos1-1, self.pos1+rlen-1)
-			down_seq = refs.fetch(self.chr2, self.pos2, self.pos2+rlen)
+			#up_seq = refs.fetch(self.chr1, self.pos1-1-rlen, self.pos1+rlen-1)
+			#down_seq = refs.fetch(self.chr2, self.pos2-rlen, self.pos2+rlen)
+			down_seq = refs.fetch(self.chr1, self.pos1-1-rlen, self.pos1+rlen-1)
+			up_seq = refs.fetch(self.chr2, self.pos2-rlen, self.pos2+rlen)
 		elif self.strand1 == "-" and  self.strand2 == "-":
-			up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-1, self.pos1+rlen-1), "c")
-			down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1), "r")
+			#up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-1-rlen, self.pos1+rlen-1), "c")
+			#down_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1+rlen), "r")
+			#up_seq = sequtils.rc_seq(refs.fetch(self.chr1, self.pos1-rlen, self.pos1+rlen), "rc")
+			#down_seq = refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2-1+rlen)
+			down_seq = refs.fetch(self.chr1, self.pos1-rlen-1, self.pos1+rlen-1)
+			up_seq = sequtils.rc_seq(refs.fetch(self.chr2, self.pos2-rlen-1, self.pos2+rlen-1), "rc")
 		else:
 			print >> sys.stderr, "Unknown strand:", self.strand1, self.strand2
 			sys.exit(1)
-		i = 0
-		while i < rlen:
+		
+		if len(up_seq) < rlen or len(down_seq) < rlen:
+			print >> sys.stderr, "Warnning: reference sequence cannot be fetched."
+			print >> sys.stderr, self.tostring()
+		
+			return (-1, -1)
+
+		i = rlen - 1
+		while i >= 0:
 			if up_seq[i].upper() == down_seq[i].upper():
-				i += 1
+				i -= 1
 			else:
 				break
-		print up_seq.upper()
-		print down_seq.upper()
-		return i
+		j = rlen
+		while j < 2*rlen:
+			if up_seq[j].upper() == down_seq[j].upper():
+				j += 1
+			else:
+				break
+
+		print up_seq.upper()[0:rlen], up_seq.lower()[rlen:]
+		print down_seq.lower()[0:rlen], down_seq.upper()[rlen:]
+		return (rlen-1-i, j-rlen)
 				
 class GeneIntervals():
 	def __init__(self, bed_ann_list):
@@ -640,7 +699,41 @@ class GeneIntervals():
 		self.is_coding = is_coding
 		'''
 		self.load(bed_ann_list)
+	def check_bed_ann_list(self, bed_ann_list):
+		flag = True
+		if not bed_ann_list:
+			flag = False
+		else:
+			if len(set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])) > 1:
+				flag = False
+			else:
+				max_start = max([a.start for a in bed_ann_list])
+				min_end = min([a.end for a in bed_ann_list])
+				# Gene has two annotations more than 1Mb away from each other
+				if max_start - min_end > 5000000:
+					flag = False
+			print >> sys.stderr, "Warnning: Input gene annotations include multiple chr, strand, or regions (5Mb away). Skipping current gene annotation."
+			print >> sys.stderr, set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])
+
+		return flag
 	def load(self, bed_ann_list):
+		if not self.check_bed_ann_list(bed_ann_list):
+			self.gene_name = "NA"
+			self.chr = "NA"
+			self.start = -1
+			self.end = -1
+			self.strand = "NA"
+			self.is_coding = False
+			self.is_contradictory = True # contradictory gene annotation, will not be used
+		else:
+			self.gene_name = bed_ann_list[0].gene_name
+			self.chr = bed_ann_list[0].chr
+			self.strand= bed_ann_list[0].strand
+			self.start = min([a.start for a in bed_ann_list])
+			self.end = max([a.end for a in bed_ann_list])
+			self.is_coding = True if "cds" in [a.type for a in bed_ann_list] else False
+			self.is_contradictory = False
+		'''
 		if not bed_ann_list:
 			self.gene_name = "NA"
 			self.chr = "NA"
@@ -660,10 +753,13 @@ class GeneIntervals():
 			self.chr = bed_ann_list[0].chr
 			self.strand= bed_ann_list[0].strand
 
-			self.start = min([a.start for a in bed_ann_list])
-			self.end = max([a.end for a in bed_ann_list])
-			self.is_coding = True if "cds" in [a.type for a in bed_ann_list] else False
-				
+			self.start = min([a.start for a in filter(lambda x:x.chr==self.chr, bed_ann_list)])
+			self.end = max([a.end for a in filter(lambda x:x.chr==self.chr, bed_ann_list)])
+			#self.start = min([a.start for a in bed_ann_list])
+			#self.end = max([a.end for a in bed_ann_list])
+			#self.is_coding = True if "cds" in [a.type for a in bed_ann_list] else False
+			self.is_coding = True if "cds" in [a.type for a in filter(lambda x:x.chr==self.chr, bed_ann_list)] else False
+		'''		
 	
 	def overlap(self, interval2):
 		if self.chr == interval2.chr and min(self.end, interval2.end) - max(self.start, interval2.start) > 0:
@@ -683,6 +779,7 @@ class GeneIntervals():
 			new_interval.start =  min(self.start, interval2.start)
 			new_interval.end =  max(self.end, interval2.end)
 			new_interval.strand = self.strand
+			# for merged gene intervals is_coding has no sense
 			new_interval.is_coding = False
 			
 			return new_interval			
@@ -786,7 +883,7 @@ class GeneAnnotation():
 			if interval.is_coding:
 				self.__coding_gene_list.append(interval)
 		self.__coding_gene_list.sort(key = lambda i:(i.chr, i.start))
-		
+
 		i_f = 0 # idx of forward starnd gene
 		i_r = 0 # idx of reverse starnd gene
 		#pre_interval_f = GeneIntervals("None", "chr0", 0, 0, "+", False)
@@ -813,9 +910,10 @@ class GeneAnnotation():
 			print key, self.__gene_name_idx_map[key]
 	# whether a gene include coding exon (cds)
 	def is_coding(self, gene_name):
-		return self.__gene_intervals[gene_name].is_coding
-	
-	
+		return self.__gene_intervals[gene_name].is_coding 
+	# where a gene has contradictory annotations
+	def is_contradictory(self, gene_name):
+		return self.__gene_intervals[gene_name].is_contradictory
 	def get_coding_gene_idx(self, gene_name):
 		return self.__gene_name_idx_map[gene_name]
 
@@ -875,6 +973,8 @@ class GeneAnnotation():
 			
 			
 	def map_pos_to_genes(self, chr, pos):
+		# if pos is within 10bp window of any boundary, set close_to_boundary True
+		t = 10
 		matched_genes = []
 		if not chr in self.__gene_starts:
 			return matched_genes
@@ -887,8 +987,15 @@ class GeneAnnotation():
 				break
 
 			if bpann.start <= pos <= bpann.end:
+				# check if pos is on/close to current annotation's boundary, these are not gene annotations' attributes, need to reset every time
+				bpann.is_on_boundary = False
+				bpann.close_to_boundary = False
 				if bpann.start == pos or bpann.end == pos:
 					bpann.is_on_boundary = True
+					bpann.close_to_boundary = True
+				elif min(abs(bpann.start-pos), abs(bpann.end-pos)) < t:
+					bpann.close_to_boundary = True
+
 				matched_genes.append(bpann)
 			idx -= 1
 	
