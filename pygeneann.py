@@ -46,6 +46,68 @@ class GeneBed():
 	def tostring(self):
 		attrs = [self.chr, str(self.start), str(self.end), self.transcript_id, self.type, str(self.idx), self.strand, self.gene_name, self.gene_id]
 		return "\t".join(attrs)
+# fusions are clusted by gene pairs
+#Gene_Cluster DIPG106N Normal DIPG EricScript GeneFusion NoDriverGene,GeneFusion >>CTD-2369P2.8_utr3;ICAM1_utr3>>VPS39_intron,utr3 False False False False -1
+class CategoryFusions():
+	def __init__(self, category_line):
+		self.__load_category(category_line)
+	def __load_category(self, category_line):
+		tmp = category_line.split()
+		self.cluster_type = tmp[0]
+		self.samples = tmp[1].split(",")
+		self.sample_type = tmp[2] #tmp[2].split(",")
+		self.disease = tmp[3].split(",")
+		self.tools = tmp[4].split(",")
+		self.inferred_fusion_type = tmp[5]
+		self.fusion_types = tmp[6].split(",")
+		self.gene_orders = tmp[7].split(";")
+		self.gene1_on_bnd = tmp[8]
+		self.gene1_close_to_bnd = tmp[9]
+		self.gene2_on_bnd = tmp[10]
+		self.gene2_close_to_bnd = tmp[11]
+		self.dna_supp = tmp[12] # dna support, 0: has data, no dna pairs; >0:  number of dna pair clusters; -1: no data; -2: gene not in annotation; -3: chr not in bam; -4: confilicting windown start and end
+		self.line = category_line.strip()
+	def out(self):
+		print self.line
+		
+			
+class CategoryFusionStats():
+	category_list = []
+	def __init__(self, category_file):
+		self.__load_category_file(category_file)
+	def __load_category_file(self, category_file):
+		for line in open(category_file, "r"):
+			if line.startswith("#"):
+				continue
+			category = CategoryFusions(line)
+			self.category_list.append(category)
+	def filter_recurrent(self, fusion_list, threshold):
+		return filter(lambda x:len(x.samples)>=threshold, fusion_list)
+	def filter_disease(self, fusion_list, disease):
+		return filter(lambda x:disease in x.disease, fusion_list)
+
+	def filter_sample_number(self, fusion_list, threshold, sample_prefix):
+		return filter(lambda x:len(filter(lambda y:y.startswith(sample_prefix), x.samples)) >= threshold, fusion_list)
+
+	def filter_sample_type (self, fusion_list, sample_type): 	
+		return filter(lambda x:x.sample_type==sample_type, fusion_list)
+	def filter_tools_name (self, fusion_list, tool_name): 	
+		return filter(lambda x:tool_name in x.tools, fusion_list)
+	def filter_tools_num (self, fusion_list, tools_num): 	
+		return filter(lambda x:len(x.tools)>=tools_num, fusion_list)
+	def filter_inferred_type (self, fusion_list, inferred_type): 	
+		return filter(lambda x:x.inferred_fusion_type==inferred_type, fusion_list)
+	def filter_on_bnd (self, fusion_list): 	
+		return filter(lambda x:x.gene1_on_bnd and x.gene2_on_bnd, fusion_list)
+	def filter_close_to_bnd (self, fusion_list): 	
+		return filter(lambda x:(x.gene1_close_to_bnd == "True" and x.gene2_close_to_bnd == "True"), fusion_list)
+	def filter_dna_supp (self, fusion_list): 	
+		return filter(lambda x:int(x.dna_supp)>0, fusion_list)
+		
+	
+
+
+			
 class CffFusionStats():
 	__fusion_dict = {}
 	__fusion_samples_dict = {}
@@ -125,7 +187,7 @@ class CffFusionStats():
 					inferred_category = category
 					break
 
-			print cluster_type, ",".join(list(set(sample_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), inferred_category, ",".join(list(set(category_list))), ";".join(list(set(gene_order_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num
+			print cluster_type, ",".join(list(set(sample_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), inferred_category, ",".join(list(set(category_list))), "|".join(list(set(gene_order_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num
 	# cluster fusions of "NoDriverGene" and "Truncated" type on their breakpoints
 	def generate_common_fusion_stats_by_breakpoints(self, fusion_list):
 		diff = 100000
@@ -351,7 +413,7 @@ class CffFusion():
 		if len(tmp) == 30:
 			self.dnasupp = tmp[29]
 		else:
-			self.dnasupp = -1 # not available
+			self.dnasupp = -9 # not available
 		self.boundary_info = ""		
 		# same all attrs in a list, for printing	
 		self.zone1_attrs = ["chr1", "pos1", "strand1", "chr2", "pos2", "strand2"]
