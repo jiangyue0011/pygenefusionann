@@ -9,21 +9,33 @@ import copy
 print >> sys.stderr, "Version 0.2"
 class GeneBed():
 	def __init__(self, bed_line):
-		tmp = bed_line.split()
-		self.chr = tmp[0]
-		self.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
-		self.end = int(tmp[2])		# start and end are first and last base of each segment
-		self.transcript_id = tmp[3]
-		self.type = tmp[4] # utr/intron/cds
-		self.idx = int(tmp[5])
-		self.strand = tmp[6]
-		self.gene_name = tmp[7]
-		self.gene_id = tmp[8]
-		# the following two attr are only used for breakpoint annotation, tell whether current breakpoint on/close to boundary, need to reset everytime before used
-		self.is_on_boudary = False
-		self.close_to_boundary = False
-		# in gene intervals, this gene includes annotations from different chr, strand or >5Mb distance
-		self.is_from_contradictory_gene = False
+		if bed_line:
+			tmp = bed_line.split()
+			self.chr = tmp[0]
+			self.start = int(tmp[1]) + 1	# bed file use 0-based coordinate
+			self.end = int(tmp[2])		# start and end are first and last base of each segment
+			self.transcript_id = tmp[3]
+			self.type = tmp[4] # utr/intron/cds
+			self.idx = int(tmp[5])
+			self.strand = tmp[6]
+			self.gene_name = tmp[7]
+			self.gene_id = tmp[8]
+			# the following two attr are only used for breakpoint annotation, tell whether current breakpoint on/close to boundary, need to reset everytime before used
+			#self.is_on_boundary = False
+			#self.close_to_boundary = False
+			# in gene intervals, this gene includes annotations from different chr, strand or >5Mb distance
+			self.is_from_contradictory_gene = False
+		else:
+			self.chr = "NA"
+			self.start = 0	# bed file use 0-based coordinate
+			self.end = 0		# start and end are first and last base of each segment
+			self.transcript_id = "NA"
+			self.type = "NA" # utr/intron/cds
+			self.idx = -1
+			self.strand = "NA"
+			self.gene_name = "NA"
+			self.gene_id = "NA"
+			self.is_from_contradictory_gene = False
 
 	def overlap(self, genebed2):
 		if self.chr == genebed2.chr and min(self.end, genebed2.end) - max(self.start, genebed2.start) > 0:
@@ -42,7 +54,7 @@ class GeneBed():
 			new_bed.start =  min(self.start, genebed2.start)
 			new_bed.end =  max(self.end, genebed2.end)
 			
-			return new_bed			
+			return new_bed
 	def tostring(self):
 		attrs = [self.chr, str(self.start), str(self.end), self.transcript_id, self.type, str(self.idx), self.strand, self.gene_name, self.gene_id]
 		return "\t".join(attrs)
@@ -162,6 +174,25 @@ class CffFusionStats():
 		# find common fusions
 	# output fusions in a fusion list as clustered fusions
 	def output_clustered_fusions(self, fusion_list, cluster_type):	
+			gene1_list = [f.reann_gene1 for f in fusion_list]
+			gene2_list = [f.reann_gene2 for f in fusion_list]
+
+			sample_list = [f.sample_name for f in fusion_list]	
+			disease_list = [f.disease for f in fusion_list]	
+			tool_list = [f.tool for f in fusion_list]	
+			sample_type_list = [f.sample_type for f in fusion_list]	
+			gene1_on_bndry = "True" in [f.gene1_on_bndry for f in fusion_list] 
+			gene1_close_to_bndry = "True" in [f.gene1_close_to_bndry for f in fusion_list] 
+			gene2_on_bndry = "True" in [f.gene2_on_bndry for f in fusion_list] 
+			gene2_close_to_bndry = "True" in [f.gene2_close_to_bndry for f in fusion_list] 
+			
+			dna_supp_cluster_num = max([int(f.dnasupp) for f in fusion_list])
+
+			category_list = [f.category for f in fusion_list]	
+
+			print cluster_type, ",".join(list(set(gene1_list))), ",".join(list(set(gene2_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num, ",".join(list(set(sample_list)))
+
+	def output_clustered_fusions_version1(self, fusion_list, cluster_type):	
 			sample_list = [f.sample_name for f in fusion_list]	
 			disease_list = [f.disease for f in fusion_list]	
 			tool_list = [f.tool for f in fusion_list]	
@@ -225,7 +256,29 @@ class CffFusionStats():
 		fusion_dict = {}
 		fusion_list_for_bp_cmp = []
 		common_key_dict = {}
-		for line in  open(cff_file, "r"):
+		# cluster fusions by gene pairs, save in fusion_dict
+		for line in open(cff_file, "r"):
+			if line.startswith("#"):
+				continue
+			fusion = CffFusion(line)
+			# send fusion to breakpoint cluster later
+			if fusion.reann_gene1 == "NA" or fusion.reann_gene2 == "NA":
+				fusion_list_for_bp_cmp.append(fusion)
+			else:
+				key = (fusion.reann_gene1, fusion.reann_gene2)	
+				fusion_dict.setdefault(key, []).append(fusion)
+		# output clustered fusions
+		for key in fusion_dict:
+			fusion_list = fusion_dict[key]
+
+			self.output_clustered_fusions(fusion_list, "Gene_Cluster")
+		self.generate_common_fusion_stats_by_breakpoints(fusion_list_for_bp_cmp)		
+		
+	def generate_common_fusion_stats_by_genes_version1(self, cff_file):
+		fusion_dict = {}
+		fusion_list_for_bp_cmp = []
+		common_key_dict = {}
+		for line in open(cff_file, "r"):
 			if line.startswith("#"):
 				continue
 			fusion = CffFusion(line)
@@ -376,6 +429,51 @@ class CffFusion():
 		self.t_gene2 = tmp[15]
 		self.t_area2 = tmp[16]
 		# Re-annotation Zone
+		# ReadThrough     DTX2    cds     DTX2P1-UPK3BP1-PMS2P11  utr3    True    TrueTrue     True    5.5     1       474827  1       F00000001       CCTCCCGCAGGGCCCTGAGCACCCCAATCCCGGAAAGCCGTTCACTGCCAGAGGGTTTCCCCGCCAGTGCTACCTTCCAGACAACGCCCAGGGCCGCAAG    CCTCCAGGGGCTTCCAGAACCCGGAGACACTGGCTGACATTCCGGCCTCCCCACAGCTGCTGACCGATGGCCACTACATGACGCTGCCCGTGTCTCCGGA
+		if len(tmp) == 33:
+			self.category = tmp[17]
+			self.reann_gene1 = tmp[18]
+			self.reann_type1 = tmp[19]
+			self.reann_gene2 = tmp[20]
+			self.reann_type2 = tmp[21]
+                        self.gene1_on_bndry = tmp[22] # gene1 breakpoint on boundary
+                        self.gene1_close_to_bndry = tmp[23] # gene1 breakpoint within 10bp of a boundary
+                        self.gene2_on_bndry = tmp[24] # gene2 on boundary
+                        self.gene2_close_to_bndry = tmp[25] # gene2 close to boundary
+			self.score = tmp[26]	# score for bpann1 + bpann2
+			self.coding_id_distance = tmp[27]	# difference between two coding fusion genes, if not coding the value is -1
+			self.gene_interval_distance = tmp[28] # distance between two fusion gene intervals
+			self.dnasupp = tmp[29]
+			self.fusion_id = tmp[30]
+			self.seq1 = tmp[31]
+			self.seq2 = tmp[32]
+		else:
+			self.category = "NA"	# category
+			self.reann_gene1 = "NA"
+			self.reann_type1 = "NA"
+			self.reann_gene2 = "NA"
+			self.reann_type2 = "NA"
+                        self.gene1_on_bndry = "NA" # gene1 breakpoint on boundary
+                        self.gene1_close_to_bndry = "NA" # gene1 breakpoint within 10bp of a boundary
+                        self.gene2_on_bndry = "NA" # gene2 on boundary
+                        self.gene2_close_to_bndry = "NA" # gene2 close to boundary
+			self.score = 0	# score for bpann1 + bpann2
+			self.coding_id_distance = -1	# difference between two coding fusion genes, if not coding the value is -1
+			self.gene_interval_distance = 0 # distance between two fusion gene intervals
+			self.fusion_id = "NA"
+			self.seq1 = "NA"
+			self.seq2 = "NA"
+			if len(tmp) == 30:
+				self.dnasupp = tmp[29]
+			else:
+				self.dnasupp = -9 # not available
+		self.bpann1 = GeneBed("")	# breakpoint1 annotation (GeneBed)
+		self.bpann2 = GeneBed("")	# breakpoint2 annotation (GeneBed)	
+		self.score1 = 0	# score for bpann1 + bpann2
+		self.score2 = 0	# score for bpann1 + bpann2
+		
+			
+		'''
 		if len(tmp) >= 25:
 			self.reann_gene_order1 = tmp[17] # re-annotated gene order on fw strand e.g. ZNF248_utr3,cds>>RP11-258F22.1_utr3
 			self.reann_gene_type1 = tmp[18] # re-annotated gene type e.g. CodingGene>>NoncodingGene
@@ -397,9 +495,9 @@ class CffFusion():
 			self.reann_gene_type2 = "NA"
 			self.reann_gene_index2 = "NA"
 			self.reann_category2 = "NA"
-
+		
 		# breakpoints on boundary
-		if len(tmp) >= 29:
+		if len(tmp) >= 29 and False:
                         self.gene1_on_bndry = tmp[25] # gene1 breakpoint on boundary
                         self.gene1_close_to_bndry = tmp[26] # gene1 breakpoint within 10bp of a boundary
                         self.gene2_on_bndry = tmp[27] # gene2 on boundary
@@ -410,10 +508,8 @@ class CffFusion():
                         self.gene2_on_bndry = "NA" # gene2 on boundary
                         self.gene2_close_to_bndry = "NA" # gene2 close to boundary
 		# column 30 is dna supporting cluster number
-		if len(tmp) == 30:
-			self.dnasupp = tmp[29]
-		else:
-			self.dnasupp = -9 # not available
+		'''
+
 		self.boundary_info = ""		
 		# same all attrs in a list, for printing	
 		self.zone1_attrs = ["chr1", "pos1", "strand1", "chr2", "pos2", "strand2"]
@@ -560,13 +656,104 @@ class CffFusion():
 
 	def tostring(self):
 		value = []
-		for attr in self.zone1_attrs + self.zone2_attrs + self.zone3_attrs + self.zone4_attrs:
+		#for attr in self.zone1_attrs + self.zone2_attrs + self.zone3_attrs + self.zone4_attrs:
+		for attr in self.zone1_attrs + self.zone2_attrs + self.zone3_attrs:
 			if not attr in self.__dict__:
 				print >> sys.stderr, "Attribute name error:", attr
 				sys.exit(1)
 			else:
 				value.append(self.__dict__[attr])
-		return "\t".join(map(lambda x:str(x), value)) + "\t" + self.boundary_info
+		#return "\t".join(map(lambda x:str(x), value)) + "\t" + self.boundary_info
+		self.boundary_info = "\t".join(map(str, [self.gene1_on_bndry, self.gene1_close_to_bndry, self.gene2_on_bndry, self.gene2_close_to_bndry]))
+		
+		return "\t".join(map(lambda x:str(x), value)) + "\t" + self.category + "\t" + self.reann_gene1 + "\t" + self.reann_type1 + "\t" + self.reann_gene2 + "\t" + self.reann_type2 + "\t" + self.boundary_info + "\t" + str(self.score) + "\t" + str(self.coding_id_distance) + "\t" + str(self.gene_interval_distance) + "\t" + str(self.dnasupp) + "\t" + self.fusion_id + "\t" + self.seq1 + "\t" + self.seq2
+	
+	def __check_boundary(self, bpann, order): # bpann is GeneBed object
+		# set on boundary info, used boundaries according to head/tail gene and their starnd
+		is_on_boundary = False
+		close_to_boundary = False
+		t = 5
+	
+		if bpann.start <= self.pos1 <= bpann.end:
+			pos = self.pos1
+		elif bpann.start <= self.pos2 <= bpann.end:
+			pos = self.pos2
+		else:
+			print >> sys.stderr, "Map pos to gene error"
+			sys.exit(1)
+		
+		if order == "head":
+			if bpann.strand == "f": # + strand head gene
+				if bpann.end == pos:
+					is_on_boundary = True
+					close_to_boundary = True
+				elif abs(bpann.end-pos) < t:
+					close_to_boundary = True
+			elif bpann.strand == "r":
+				if bpann.start == pos:
+					is_on_boundary = True
+					close_to_boundary = True
+				elif abs(bpann.start-pos) < t:
+					close_to_boundary = True
+			else:
+				print >> "Unknkown strand:", bpann.strand
+				sys.exit(1)
+		else:
+			if bpann.strand == "f": # + strand head gene
+				if bpann.start == pos:
+					is_on_boundary = True
+					close_to_boundary = True
+				elif abs(bpann.start-pos) < t:
+					close_to_boundary = True
+			elif bpann.strand == "r":
+				if bpann.end == pos:
+					is_on_boundary = True
+					close_to_boundary = True
+				elif abs(bpann.end-pos) < t:
+					close_to_boundary = True
+			else:
+				print >> "Unknkown strand:", bpann.strand
+				sys.exit(1)
+		#print bpann.start, bpann.end, pos
+		return is_on_boundary, close_to_boundary
+	# assign a score for every potential fusion gene pair;order is head/tail gene		
+	def __cal_score(self, bpann, order):
+		# Scores to choose best annotation
+		score_exon_bnd = 3
+		score_exon_bnd_close = 2.9
+		score_utr_bnd = 2.5
+		score_utr_bnd_close = 2.4
+		score_in_exon = 2
+		score_in_utr = 1.5
+		score_in_intron = 1
+		score_intergenic = 0.5
+		if bpann.gene_name == "NA":
+			score = score_intergenic
+			return score
+		is_on_boundary, close_to_boundary = self.__check_boundary(bpann, order)
+		score = 0
+		if bpann.type == "cds":
+			if is_on_boundary:
+				score = score_exon_bnd
+			elif close_to_boundary:
+				score = score_exon_bnd_close
+			else:
+				score = score_in_exon
+		elif bpann.type == "utr3" or bpann.type == "utr5":
+			if is_on_boundary:
+				score = score_utr_bnd
+			elif close_to_boundary:
+				score = score_utr_bnd_close
+			else:
+				score = score_in_utr
+		elif bpann.type == "intron":
+			score = score_in_intron
+		else:
+			print >> sys.stderr, "Unkknown type:", bpann.type
+			sys.exit(1)
+		#print score, is_on_boundary, close_to_boundary	
+		return score, is_on_boundary, close_to_boundary	
+						
 	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
 	def __check_gene_pairs(self, genes1, genes2, gene_ann):
 		gene_order = []
@@ -575,7 +762,13 @@ class CffFusion():
 		id1 = []
 		id2 = []
 		category = ""
+		t = 5
+
+
+				
 		common_genes =  set(genes1.keys()) & set(genes2.keys())
+
+		# type of genes, coding gene ids
 		for gene_name in set(genes1.keys()):
 			if gene_ann.is_coding(gene_name):
 				type1.append("CodingGene")
@@ -588,33 +781,32 @@ class CffFusion():
 				id2.append(str(gene_ann.get_coding_gene_idx(gene_name)))
 			else:
 				type2.append("NoncodingGene")
-
-		list1 = []
+		'''
+		# check cds/utr/intron
+		#list1 = []
+		type1 = ""
 		for gene_name in genes1:
-			tmp = set(genes1[gene_name])
+			tmp = set([g.type for g in genes1[gene_name]])
+			gene1, type1 = self.__check_type(genes1)
 			if gene_ann.is_contradictory(gene_name):
 				gene_name += "(Cont)"
-			list1.append(gene_name + "_" + ",".join(list(tmp)))
-		list2 = []
+			#list1.append(gene_name + "_" + ",".join(list(tmp)))
+		#list2 = []
+		type2 = ""
 		for gene_name in genes2:
-			tmp = set(genes2[gene_name])
+			tmp = set([g.type for g in genes2[gene_name]])
+			gene2, type2 = self.__check_type(genes2)
 			if gene_ann.is_contradictory(gene_name):
 				gene_name += "(Cont)"
-			list2.append(gene_name + "_" + ",".join(list(tmp)))
+			#list2.append(gene_name + "_" + ",".join(list(tmp)))
+		'''
 		# No driver gene
 		if not genes1:
-			#gene_order.extend(["NA"]*3)
-			#gene_order.append("NoDriverGene")
 			category = "NoDriverGene"
 		# map to same gene
 		elif common_genes:
-			#gene_order.append("SameGene" + "\t" + ",".join(list(common_genes)))
-			#gene_order.extend(["NA"]*3)
-			#gene_order.append("SameGene")
 			category = "SameGene"
 		else:
-			#gene_order.append(",".join(list(set(genes1))) + ">>" + ",".join(list(set(genes2))))
-
 			# category fusions into: read through, gene fusion, truncated coding, truncated noncoding, nonsense
 			if "CodingGene" in type1 and "CodingGene" in type2:
 				for id in id1:
@@ -636,20 +828,72 @@ class CffFusion():
 				print >> sys.stderr, "Warning: Unknown category."
 				print >> sys.stderr, type1, type2
 
+		# Calsulate score for every gene pair, choose the best
+		
+		# get best score for current gene combination	
+		max_t1 = 0, "NA", "NA", GeneBed("")
+		max_t2 = 0, "NA", "NA", GeneBed("")
+		for gname1 in genes1:
+			for bpann1 in genes1[gname1]:
+				score1, is_on_boundary1, close_to_boundary1 = self.__cal_score(bpann1, "head")	
+				if score1 > max_t1[0]:
+					max_t1 = score1, is_on_boundary1, close_to_boundary1, bpann1
+					'''
+					self.score1 = score1
+					self.gene1_on_bndry = is_on_boundary1
+					self.gene1_close_to_bndry = close_to_boundary1
+					self.bpann1 = bpann1
+					'''
+		for gname2 in genes2:
+			for bpann2 in genes2[gname2]:
+				score2, is_on_boundary2, close_to_boundary2 = self.__cal_score(bpann2, "tail")	
+				if score2 > max_t2[0]:
+					max_t2 = score2, is_on_boundary2, close_to_boundary2, bpann2
+				'''	
+				if score2 > self.score2:
+					self.score2 = score2
+					self.gene2_on_bndry = is_on_boundary2
+					self.gene2_close_to_bndry = close_to_boundary2
+					self.bpann2 = bpann2
+				'''
+		if max_t1[0] + max_t2[0] > self.score1 + self.score2:
+			self.score1, self.gene1_on_bndry, self.gene1_close_to_bndry, self.bpann1 = max_t1
+			self.score2, self.gene2_on_bndry, self.gene2_close_to_bndry, self.bpann2 = max_t2
+			self.score = self.score1 + self.score2
+			self.category = category
+			self.reann_gene1 = self.bpann1.gene_name
+			self.reann_gene2 = self.bpann2.gene_name
+			self.reann_type1 = self.bpann1.type
+			self.reann_type2 = self.bpann2.type
 
+			if id1 and id2:
+				if len(set(id1)) != 1 or len(set(id2))!= 1:
+					print >> sys.stderr, "coding id err."
+					print >> sys.stderr, id1, id2
+					sys.exit(1)
+				idx1 = int(id1[0].split("_")[0])
+				idx2 = int(id2[0].split("_")[0])
+				self.coding_id_distance = abs(idx1 - idx2)
+			gene_interval1 = gene_ann.get_gene_interval(self.bpann1.gene_name)
+			gene_interval2 = gene_ann.get_gene_interval(self.bpann2.gene_name)
+			if gene_interval1 and gene_interval2:
+				if gene_interval1.chr == gene_interval2.chr:
+					self.gene_interval_distance = max(gene_interval1.start, gene_interval2.start) - min(gene_interval1.end, gene_interval2.end)
+		#print max_t1[0], max_t2[0]
 
-		gene_order.append(",".join(list1) + ">>" + ";".join(list2))
+		'''
+		gene_order.append(",".join(list1) + ">>" + ",".join(list2))
 		gene_order.append(",".join(type1) + ">>" + ",".join(type2))
 		gene_order.append(",".join(id1) + ">>" + ",".join(id2))
 		gene_order.append(category)
-
-		return gene_order
+		'''
+		#gene1 = "NA" if not self.bpann1 else self.bpann1.gene_name
+		#gene2 = "NA" if not self.bpann2 else self.bpann2.gene_name
+		return ""
 	# based on given gene annotations re-annotate cff fusions, infer possible up/downstream genens, try to fill in strand if info missing
 	def ann_gene_order(self, gene_ann):
 		gene_order = []
 		# fusion has been annotated
-		if self.reann_category1 != "NA" or self.reann_category2 !="NA":
-			return gene_order
 		
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
@@ -660,14 +904,14 @@ class CffFusion():
 		d = {} # backward strand gene at pos2
 		for gene in matched_genes1:
 			if gene.strand == "f":
-				a.setdefault(gene.gene_name, []).append(gene.type)
+				a.setdefault(gene.gene_name, []).append(gene)
 			else:
-				c.setdefault(gene.gene_name, []).append(gene.type)
+				c.setdefault(gene.gene_name, []).append(gene)
 		for gene in matched_genes2:
 			if gene.strand == "f":
-				b.setdefault(gene.gene_name, []).append(gene.type)
+				b.setdefault(gene.gene_name, []).append(gene)
 			else:
-				d.setdefault(gene.gene_name, []).append(gene.type)
+				d.setdefault(gene.gene_name, []).append(gene)
 		# for tools do not provide defuse-style strand, regenerate strands, this is assuming that gene1 = 5 prime gene and gene2 = 3 prime gene
 		if self.strand1 == "NA" or self.strand2 == "NA":
 			gene_interval1 = ""
@@ -717,8 +961,9 @@ class CffFusion():
 		elif self.strand1 == "-" and self.strand2 == "-":
 			gene_order = self.__check_gene_pairs(c, b, gene_ann)
 			gene_order += self.__check_gene_pairs(d, a, gene_ann)
-		self.reann_gene_order1, self.reann_gene_type1, self.reann_gene_index1, self.reann_category1, self.reann_gene_order2, self.reann_gene_type2, self.reann_gene_index2, self.reann_category2 = gene_order
+		#self.reann_gene_order1, self.reann_gene_type1, self.reann_gene_index1, self.reann_category1, self.reann_gene_order2, self.reann_gene_type2, self.reann_gene_index2, self.reann_category2 = gene_order
 		
+		'''
 		# check whether pos on mapped genes boundaries
 		on_boundary1 = False
 		close_to_boundary1 = False
@@ -745,6 +990,19 @@ class CffFusion():
 		self.boundary_info = "\t".join(map(str, [on_boundary1, close_to_boundary1, on_boundary2, close_to_boundary2]))
 		gene_order += [on_boundary1, close_to_boundary1, on_boundary2, close_to_boundary2]
 		return gene_order
+		'''
+
+		'''
+		# test pre/next ann
+		print "pre:"
+		print "cur", self.bpann1.tostring()	
+		for ann in gene_ann.get_previous_ann(self.bpann1):
+			print ann.tostring()
+		print "next:"
+		print "cur", self.bpann2.tostring()	
+		for ann in gene_ann.get_next_ann(self.bpann2):
+			print ann.tostring()
+		'''	
 
 	# realign breakpoints of this fusion to the left most, not finished, how to define "left" when genes are on different chrs 
 	def left_aln_fusion_bp(self, refs):
@@ -952,7 +1210,7 @@ class GeneAnnotation():
 
 			print >> sys.stderr, "mem of gene_intervals:", sys.getsizeof(self.__gene_intervals)
 			print >> sys.stderr, "length:", len(self.__gene_intervals.keys())
-			print >> sys.stderr, "unit size:", sys.getsizeof(self.__gene_intervals[self.__gene_intervals.keys()[0]])
+			print >> sys.stderr, "unit size:", sys.getsizeof(self.__gene_intervals[self.__gene_intervals.keys()[0]].start)
 			'''
 			#self.load_transcripts_ann(gene_ann_bed)
 	# for each transcript save all its cds,intron, utr annotations in dictionary __transcripts_ann
@@ -970,6 +1228,28 @@ class GeneAnnotation():
 			return self.__transcripts_ann[trans_id]
 		else:
 			return []	
+	def get_previous_ann(self, bpann):
+		bpann_list = self.get_transcripts_ann(bpann.transcript_id)
+		pre_bpann_list = []
+		for ann in bpann_list:
+			if bpann.strand == "f":
+				if ann.idx == bpann.idx - 1:
+					pre_bpann_list.append(ann)
+			elif bpann.strand == "r":
+				if ann.idx == bpann.idx + 1:
+					pre_bpann_list.append(ann)
+		return pre_bpann_list	
+	def get_next_ann(self, bpann):
+		bpann_list = self.get_transcripts_ann(bpann.transcript_id)
+		next_bpann_list = []
+		for ann in bpann_list:
+			if bpann.strand == "f":
+				if ann.idx == bpann.idx + 1:
+					next_bpann_list.append(ann)
+			elif bpann.strand == "r":
+				if ann.idx == bpann.idx - 1:
+					next_bpann_list.append(ann)
+		return next_bpann_list	
 	def get_gene_id(self, gene):
 		if gene in self.__gene_name_id_map:
 			return self.__gene_name_id_map[gene]
@@ -1104,6 +1384,7 @@ class GeneAnnotation():
 				break
 
 			if bpann.start <= pos <= bpann.end:
+				'''
 				# check if pos is on/close to current annotation's boundary, these are not gene annotations' attributes, need to reset every time
 				bpann.is_on_boundary = False
 				bpann.close_to_boundary = False
@@ -1112,7 +1393,7 @@ class GeneAnnotation():
 					bpann.close_to_boundary = True
 				elif min(abs(bpann.start-pos), abs(bpann.end-pos)) < t:
 					bpann.close_to_boundary = True
-
+				'''
 				matched_genes.append(bpann)
 			idx -= 1
 	
@@ -1343,23 +1624,6 @@ def cmp_intervals(start1, end1, start2, end2):
 	return end - start
 
 
-#return seq0's revers complement sequence
-def rc_seq(seq0):
-	seq=seq0.upper()
-	tmpseq=seq.replace("A","a")
-	seq=tmpseq
-	tmpseq=seq.replace("T","A")
-	seq=tmpseq
-	tmpseq=seq.replace("a","T")
-	seq=tmpseq
-	tmpseq=seq.replace("G","g")
-	seq=tmpseq
-	tmpseq=seq.replace("C","G")
-	seq=tmpseq
-	tmpseq=seq.replace("g","C")
-	seq=tmpseq[::-1]
-	return seq
-
 def pass_filter(read):
 	if read.mapping_quality == 255: # tophat2 max mapq
 		return True
@@ -1464,5 +1728,47 @@ def get_gene_names_from_gene_order(gene_order_string):
 					tmp4 = t3.split("_")
 					g.append(tmp4[0])
 	return g_driver, g_passenger
-		
+# build fusion sequence, with up/downstream genome sequence, splicing not considered by far		
+def get_fusion_seq(fusion, ref, seg_len):
+
+        chr1 = fusion.chr1
+        chr2 = fusion.chr2
+        bp1 = fusion.pos1
+        bp2 = fusion.pos2
+        strand1 = fusion.strand1
+        strand2 = fusion.strand2
+
+        refs = pysam.FastaFile(ref)
+	if not chr1 in refs:
+		if chr1.startswith("chr"):
+			chr1 = chr1[3:]
+			chr2 = chr2[3:]
+		else:
+			chr1 = "chr" + chr1
+			chr2 = "chr" + chr2
+	if not chr1 in refs:
+		print >> sys.stderr, "unmatched reference."
+		sys.exit(1)
+
+
+        if strand1 == "+": ## ->|
+                win_start1 = bp1 -seg_len
+                win_end1 = bp1
+                seq1 = refs.fetch(chr1, win_start1, win_end1)
+        else: ## |<-
+                win_start1 = bp1 - 1
+                win_end1 = bp1 +seg_len - 1
+                seq1 = sequtils.rc_seq(refs.fetch(chr1, win_start1, win_end1), "rc")
+
+        if strand2 == "+": ## <-|
+                win_start2 = bp2 - seg_len
+                win_end2 = bp2
+                seq2 = sequtils.rc_seq(refs.fetch(chr2, win_start2, win_end2), "rc")
+        else: ## |->
+                win_start2 = bp2 - 1
+                win_end2 = bp2 + seg_len - 1
+                seq2 = refs.fetch(chr2, win_start2, win_end2)
+        fusion.seq1 = seq1.upper()
+	fusion.seq2 = seq2.upper()
+        #return seq1.upper(), seq2.upper()
 		
