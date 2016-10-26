@@ -6,7 +6,7 @@ import bisect
 import time
 import sequtils
 import copy
-print >> sys.stderr, "Version 0.2"
+import re
 class GeneBed():
 	def __init__(self, bed_line):
 		if bed_line:
@@ -17,7 +17,7 @@ class GeneBed():
 			self.transcript_id = tmp[3]
 			self.type = tmp[4] # utr/intron/cds
 			self.idx = int(tmp[5])
-			self.strand = tmp[6]
+			self.strand = tmp[6] # r/f
 			self.gene_name = tmp[7]
 			self.gene_id = tmp[8]
 			# the following two attr are only used for breakpoint annotation, tell whether current breakpoint on/close to boundary, need to reset everytime before used
@@ -59,25 +59,28 @@ class GeneBed():
 		attrs = [self.chr, str(self.start), str(self.end), self.transcript_id, self.type, str(self.idx), self.strand, self.gene_name, self.gene_id]
 		return "\t".join(attrs)
 # fusions are clusted by gene pairs
-#Gene_Cluster DIPG106N Normal DIPG EricScript GeneFusion NoDriverGene,GeneFusion >>CTD-2369P2.8_utr3;ICAM1_utr3>>VPS39_intron,utr3 False False False False -1
+#Gene_Cluster DIPG106N Normal DIPG EricScript GeneFusion NoDriverGene,GeneFusion >>CTD-2369P2.8_utr3;ICAM1_utr3>>VPS39_intron,utr3 False False False False -1; # old category format
+
+#Gene_Cluster S1PR5 KEAP1 Tumor DIPG Integrate,EricScript ReadThrough True True True True 0 DIPG28T,SJHGG143_A,SJHGG075_A; current format
+
 class CategoryFusions():
 	def __init__(self, category_line):
 		self.__load_category(category_line)
 	def __load_category(self, category_line):
 		tmp = category_line.split()
 		self.cluster_type = tmp[0]
-		self.samples = tmp[1].split(",")
-		self.sample_type = tmp[2] #tmp[2].split(",")
-		self.disease = tmp[3].split(",")
-		self.tools = tmp[4].split(",")
-		self.inferred_fusion_type = tmp[5]
-		self.fusion_types = tmp[6].split(",")
-		self.gene_orders = tmp[7].split(";")
-		self.gene1_on_bnd = tmp[8]
-		self.gene1_close_to_bnd = tmp[9]
-		self.gene2_on_bnd = tmp[10]
-		self.gene2_close_to_bnd = tmp[11]
-		self.dna_supp = tmp[12] # dna support, 0: has data, no dna pairs; >0:  number of dna pair clusters; -1: no data; -2: gene not in annotation; -3: chr not in bam; -4: confilicting windown start and end
+		self.gene1 = tmp[1]
+		self.gene2 = tmp[2]
+		self.sample_type = tmp[3] #tmp[2].split(",")
+		self.disease = tmp[4].split(",")
+		self.tools = tmp[5].split(",")
+		self.inferred_fusion_type = tmp[6]
+		self.gene1_on_bnd = tmp[7]
+		self.gene1_close_to_bnd = tmp[8]
+		self.gene2_on_bnd = tmp[9]
+		self.gene2_close_to_bnd = tmp[10]
+		self.dna_supp = tmp[11] # dna support, 0: has data, no dna pairs; >0:  number of dna pair clusters; -1: no data; -2: gene not in annotation; -3: chr not in bam; -4: confilicting windown start and end
+		self.samples = tmp[12].split(",")
 		self.line = category_line.strip()
 	def out(self):
 		print self.line
@@ -430,16 +433,17 @@ class CffFusion():
 		self.t_area2 = tmp[16]
 		# Re-annotation Zone
 		# ReadThrough     DTX2    cds     DTX2P1-UPK3BP1-PMS2P11  utr3    True    TrueTrue     True    5.5     1       474827  1       F00000001       CCTCCCGCAGGGCCCTGAGCACCCCAATCCCGGAAAGCCGTTCACTGCCAGAGGGTTTCCCCGCCAGTGCTACCTTCCAGACAACGCCCAGGGCCGCAAG    CCTCCAGGGGCTTCCAGAACCCGGAGACACTGGCTGACATTCCGGCCTCCCCACAGCTGCTGACCGATGGCCACTACATGACGCTGCCCGTGTCTCCGGA
-		if len(tmp) == 33:
+		#if len(tmp) == 33:
+		if len(tmp) >= 33 :
 			self.category = tmp[17]
 			self.reann_gene1 = tmp[18]
 			self.reann_type1 = tmp[19]
 			self.reann_gene2 = tmp[20]
 			self.reann_type2 = tmp[21]
-                        self.gene1_on_bndry = tmp[22] # gene1 breakpoint on boundary
-                        self.gene1_close_to_bndry = tmp[23] # gene1 breakpoint within 10bp of a boundary
-                        self.gene2_on_bndry = tmp[24] # gene2 on boundary
-                        self.gene2_close_to_bndry = tmp[25] # gene2 close to boundary
+			self.gene1_on_bndry = tmp[22] # gene1 breakpoint on boundary
+			self.gene1_close_to_bndry = tmp[23] # gene1 breakpoint within 10bp of a boundary
+			self.gene2_on_bndry = tmp[24] # gene2 on boundary
+			self.gene2_close_to_bndry = tmp[25] # gene2 close to boundary
 			self.score = tmp[26]	# score for bpann1 + bpann2
 			self.coding_id_distance = tmp[27]	# difference between two coding fusion genes, if not coding the value is -1
 			self.gene_interval_distance = tmp[28] # distance between two fusion gene intervals
@@ -447,22 +451,28 @@ class CffFusion():
 			self.fusion_id = tmp[30]
 			self.seq1 = tmp[31]
 			self.seq2 = tmp[32]
+			self.is_inframe = False
+			self.splice_site1 = "NA"
+			self.splice_site2 = "NA"
 		else:
 			self.category = "NA"	# category
 			self.reann_gene1 = "NA"
 			self.reann_type1 = "NA"
 			self.reann_gene2 = "NA"
 			self.reann_type2 = "NA"
-                        self.gene1_on_bndry = "NA" # gene1 breakpoint on boundary
-                        self.gene1_close_to_bndry = "NA" # gene1 breakpoint within 10bp of a boundary
-                        self.gene2_on_bndry = "NA" # gene2 on boundary
-                        self.gene2_close_to_bndry = "NA" # gene2 close to boundary
+			self.gene1_on_bndry = "NA" # gene1 breakpoint on boundary
+			self.gene1_close_to_bndry = "NA" # gene1 breakpoint within 10bp of a boundary
+			self.gene2_on_bndry = "NA" # gene2 on boundary
+			self.gene2_close_to_bndry = "NA" # gene2 close to boundary
 			self.score = 0	# score for bpann1 + bpann2
 			self.coding_id_distance = -1	# difference between two coding fusion genes, if not coding the value is -1
 			self.gene_interval_distance = 0 # distance between two fusion gene intervals
 			self.fusion_id = "NA"
 			self.seq1 = "NA"
 			self.seq2 = "NA"
+			self.is_inframe = False
+			self.splice_site1 = "NA"
+			self.splice_site2 = "NA"
 			if len(tmp) == 30:
 				self.dnasupp = tmp[29]
 			else:
@@ -498,15 +508,15 @@ class CffFusion():
 		
 		# breakpoints on boundary
 		if len(tmp) >= 29 and False:
-                        self.gene1_on_bndry = tmp[25] # gene1 breakpoint on boundary
-                        self.gene1_close_to_bndry = tmp[26] # gene1 breakpoint within 10bp of a boundary
-                        self.gene2_on_bndry = tmp[27] # gene2 on boundary
-                        self.gene2_close_to_bndry = tmp[28] # gene2 close to boundary
+			self.gene1_on_bndry = tmp[25] # gene1 breakpoint on boundary
+			self.gene1_close_to_bndry = tmp[26] # gene1 breakpoint within 10bp of a boundary
+			self.gene2_on_bndry = tmp[27] # gene2 on boundary
+			self.gene2_close_to_bndry = tmp[28] # gene2 close to boundary
 		else:
-                        self.gene1_on_bndry = "NA" # gene1 breakpoint on boundary
-                        self.gene1_close_to_bndry = "NA" # gene1 breakpoint within 10bp of a boundary
-                        self.gene2_on_bndry = "NA" # gene2 on boundary
-                        self.gene2_close_to_bndry = "NA" # gene2 close to boundary
+			self.gene1_on_bndry = "NA" # gene1 breakpoint on boundary
+			self.gene1_close_to_bndry = "NA" # gene1 breakpoint within 10bp of a boundary
+			self.gene2_on_bndry = "NA" # gene2 on boundary
+			self.gene2_close_to_bndry = "NA" # gene2 close to boundary
 		# column 30 is dna supporting cluster number
 		'''
 
@@ -666,10 +676,10 @@ class CffFusion():
 		#return "\t".join(map(lambda x:str(x), value)) + "\t" + self.boundary_info
 		self.boundary_info = "\t".join(map(str, [self.gene1_on_bndry, self.gene1_close_to_bndry, self.gene2_on_bndry, self.gene2_close_to_bndry]))
 		
-		return "\t".join(map(lambda x:str(x), value)) + "\t" + self.category + "\t" + self.reann_gene1 + "\t" + self.reann_type1 + "\t" + self.reann_gene2 + "\t" + self.reann_type2 + "\t" + self.boundary_info + "\t" + str(self.score) + "\t" + str(self.coding_id_distance) + "\t" + str(self.gene_interval_distance) + "\t" + str(self.dnasupp) + "\t" + self.fusion_id + "\t" + self.seq1 + "\t" + self.seq2
+		return "\t".join(map(lambda x:str(x), value)) + "\t" + self.category + "\t" + self.reann_gene1 + "\t" + self.reann_type1 + "\t" + self.reann_gene2 + "\t" + self.reann_type2 + "\t" + self.boundary_info + "\t" + str(self.score) + "\t" + str(self.coding_id_distance) + "\t" + str(self.gene_interval_distance) + "\t" + str(self.dnasupp) + "\t" + self.fusion_id + "\t" + self.seq1 + "\t" + self.seq2 + "\t" + str(self.is_inframe) + "\t" + self.splice_site1 + "\t" + self.splice_site2
 	
-	def __check_boundary(self, bpann, order): # bpann is GeneBed object
-		# set on boundary info, used boundaries according to head/tail gene and their starnd
+	def __check_boundary(self, bpann, order): # bpann is GeneBed object, order = head/tail
+		# set on boundary info, used boundaries according to head/tail gene and their strand
 		is_on_boundary = False
 		close_to_boundary = False
 		t = 5
@@ -679,8 +689,10 @@ class CffFusion():
 		elif bpann.start <= self.pos2 <= bpann.end:
 			pos = self.pos2
 		else:
-			print >> sys.stderr, "Map pos to gene error"
-			sys.exit(1)
+			#print >> sys.stderr, "Map pos to gene error"
+			#sys.exit(1)
+			return is_on_boundary, close_to_boundary
+			
 		
 		if order == "head":
 			if bpann.strand == "f": # + strand head gene
@@ -754,8 +766,8 @@ class CffFusion():
 		#print score, is_on_boundary, close_to_boundary	
 		return score, is_on_boundary, close_to_boundary	
 						
-	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions
-	def __check_gene_pairs(self, genes1, genes2, gene_ann):
+	# according to fusion strand (defuse style, strands are supporting pairs') return all possible gene fusions;depending on gene1 and gene2 (a,b,c,d), may have to switch pos order
+	def __check_gene_pairs(self, genes1, genes2, gene_ann, switch_pos):
 		gene_order = []
 		type1 = []
 		type2 = []
@@ -879,6 +891,16 @@ class CffFusion():
 			if gene_interval1 and gene_interval2:
 				if gene_interval1.chr == gene_interval2.chr:
 					self.gene_interval_distance = max(gene_interval1.start, gene_interval2.start) - min(gene_interval1.end, gene_interval2.end)
+
+			#switch pos order if necessary
+			if switch_pos:
+				self.chr1, self.chr2 = self.chr2, self.chr1
+				self.pos1, self.pos2 = self.pos2, self.pos1
+				self.strand1, self.strand2 = self.strand2, self.strand1
+				self.t_gene1, self.t_gene2 = self.t_gene2, self.t_gene1
+				self.t_area1, self.t_area2 = self.t_area2, self.t_area1
+
+
 		#print max_t1[0], max_t2[0]
 
 		'''
@@ -893,7 +915,6 @@ class CffFusion():
 	# based on given gene annotations re-annotate cff fusions, infer possible up/downstream genens, try to fill in strand if info missing
 	def ann_gene_order(self, gene_ann):
 		gene_order = []
-		# fusion has been annotated
 		
 		matched_genes1 = gene_ann.map_pos_to_genes(self.chr1, self.pos1)
 		matched_genes2 = gene_ann.map_pos_to_genes(self.chr2, self.pos2)
@@ -950,17 +971,17 @@ class CffFusion():
 				
 		# gene_order includes: 5' gene >> 3' gene, 5' gene type >> 3' gene type, 5' coding gene idx >> 3' coding gene inx, category
 		if self.strand1 == "+" and self.strand2 == "+":
-			gene_order = self.__check_gene_pairs(a, d, gene_ann)
-			gene_order += self.__check_gene_pairs(b, c, gene_ann)
+			gene_order = self.__check_gene_pairs(a, d, gene_ann, False)
+			gene_order += self.__check_gene_pairs(b, c, gene_ann, True)
 		elif self.strand1 == "+" and self.strand2 == "-":
-			gene_order = self.__check_gene_pairs(a, b, gene_ann)
-			gene_order += self.__check_gene_pairs(d, c, gene_ann)
+			gene_order = self.__check_gene_pairs(a, b, gene_ann, False)
+			gene_order += self.__check_gene_pairs(d, c, gene_ann, True)
 		elif self.strand1 == "-" and self.strand2 == "+":
-			gene_order = self.__check_gene_pairs(c, d, gene_ann)
-			gene_order += self.__check_gene_pairs(b, a, gene_ann)
+			gene_order = self.__check_gene_pairs(c, d, gene_ann, False)
+			gene_order += self.__check_gene_pairs(b, a, gene_ann, True)
 		elif self.strand1 == "-" and self.strand2 == "-":
-			gene_order = self.__check_gene_pairs(c, b, gene_ann)
-			gene_order += self.__check_gene_pairs(d, a, gene_ann)
+			gene_order = self.__check_gene_pairs(c, b, gene_ann, False)
+			gene_order += self.__check_gene_pairs(d, a, gene_ann, True)
 		#self.reann_gene_order1, self.reann_gene_type1, self.reann_gene_index1, self.reann_category1, self.reann_gene_order2, self.reann_gene_type2, self.reann_gene_index2, self.reann_category2 = gene_order
 		
 		'''
@@ -1061,7 +1082,394 @@ class CffFusion():
 		print up_seq.upper()[0:rlen], up_seq.lower()[rlen:]
 		print down_seq.lower()[0:rlen], down_seq.upper()[rlen:]
 		return (rlen-1-i, j-rlen)
+	# aln fusion breakpoint to exon/utr boundary
+	def aln_seq_to_boundary(self, seq1, splice_seq1, splice_seq2, seq2, distance_to_bnd, strand):
+		'''
+		print "seq1:", seq1[-10:]
+		print "splice seq1:", splice_seq1
+		print "splice seq2:", splice_seq2
+		print "seq2:", seq2[:10]
+		'''
+		step = 0 
+		gt_ag_step = -1
+		if distance_to_bnd > 0: # move right
+			for c in seq2:
+				if step == len(splice_seq1):
+					break
+				splice_site1 = splice_seq1[step:step+2]
+				splice_site2 = splice_seq2[len(splice_seq2)-2+step:] + seq2[max(0, step-2):step]
+				if splice_site1 == "GT" and splice_site2 == "AG":
+					gt_ag_step = step
+				if step == distance_to_bnd:
+					break
+				if c == splice_seq1[step]:
+					step += 1
+				else:
+					break
+
+		else: # move left
+			for c in seq1[::-1]:
+				if step == len(splice_seq2):
+					break
+				splice_site1 = seq1[len(seq1)-step:len(seq1)-step+2] + splice_seq1[:max(0, 2-step)]
+				splice_site2 = splice_seq2[-2-step:len(splice_seq2)-step]
+				if splice_site1 == "GT" and splice_site2 == "AG":
+					gt_ag_step = step
+				if step == abs(distance_to_bnd):
+					break
+				if c == splice_seq2[-1-step]:
+					step += 1
+				else:
+					break
+		'''
+		print distance_to_bnd
+		print step
+		print gt_ag_step
+		'''
+		if step == abs(distance_to_bnd): # shift to boundary
+			self.splice_site1 = splice_site1
+			self.splice_site2 = splice_site2
+			if strand == "f":
+				self.pos1 += distance_to_bnd
+				self.pos2 += distance_to_bnd
+			else:
+			
+				self.pos1 -= distance_to_bnd
+				self.pos2 -= distance_to_bnd
+		elif gt_ag_step > 0: #shift to GT-AG breakpoint
+			step = gt_ag_step
+			self.splice_site1 = splice_seq1[step:step+2] 
+			self.splice_site2 = splice_seq2[len(splice_seq2)-2+step:] + seq2[max(0, step-2):step]
+			if distance_to_bnd < 0: gt_ag_step = -gt_ag_step
+			if strand == "f":
+				self.pos1 += gt_ag_step
+				self.pos2 += gt_ag_step
+			else:
+			
+				self.pos1 -= gt_ag_step
+				self.pos2 -= gt_ag_step
+		else: # do not shift
+			step = 0
+			self.splice_site1 = splice_seq1[step:step+2] 
+			self.splice_site2 = splice_seq2[len(splice_seq2)-2+step:] + seq2[max(0, step-2):step]
+			
+			
+		#print self.splice_site1, self.splice_site2
+	# get coding sequence up/downstream of fusion breakpoint. trans_ann_list is a list of GeneBed for the same transcript. ref is an opened pysam fasta
+	def get_transcript_seq(self, trans_ann_list, bp, ref, gene_order):
+		if not trans_ann_list:
+			print "empty trans_ann_list"
+			return "", "", -1, -100, "", ""
+		#else:
+		#	print "ann num:", len(trans_ann_list)
+		'''
+		if coding:
+			ann_list = sorted(filter(lambda bpann:bpann.type=="cds", trans_ann_list), key = lambda x:x.start)
+		else:
+			ann_list = sorted(filter(lambda bpann:bpann.type!="intron", trans_ann_list), key = lambda x:x.start)
+		'''	
+		seqs = []
+		is_fw = (trans_ann_list[0].strand == "f")
+		is_head = (gene_order == "head")
+		splice_site = "NA"
+		trans_id = trans_ann_list[0].transcript_id
+
+		bp_in_coding = False # breakpoint of head gene in coding exon
+
+		#get last exon idx for current transcript
+		exon_ann_list = filter(lambda bpann:bpann.type=="cds", trans_ann_list)
+		if exon_ann_list:
+			if is_fw:
+				last_exon_idx = exon_ann_list[-1].idx
+			else:
+				last_exon_idx = exon_ann_list[0].idx
+		else:
+			last_exon_idx = -1
+		
+		last_exon_end = -1 # for tail seq, get the position of last basepair of last exon in seq2
+		distance_to_bnd = -100 #distance to exon/utr boundary, if breakpoint in exon/utr it equals to bnd - bp, thus positive, otherwise negative
+		
+		if is_head:
+			if is_fw: # head gene on forward strand
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, bp)
+						seqs.append(seq) 
+						splice_site = ref.fetch(format_chr(ann.chr, ref), bp, bp+20)
+						if ann.type == "cds" or len(seq) < 10: # breakpoint in cds, or close to cds
+							bp_in_coding = True
+						if ann.type == "intron":
+							distance_to_bnd = ann.start - bp - 1
+						else:
+							distance_to_bnd = ann.end - bp
+						bp_ann = ann
+						
+						break
+					elif ann.type == "cds":
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end))
+			else:
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), bp-1, ann.end)
+						seqs.append(seq) 
+						
+						splice_site = ref.fetch(format_chr(ann.chr, ref), bp-21, bp-1)
+						if ann.type == "cds" or len(seq) < 10: # breakpoint in cds, or close to cds
+							bp_in_coding = True
+						if ann.type == "intron":
+							distance_to_bnd = bp - ann.end - 1
+						else:
+							distance_to_bnd = bp - ann.start
+						bp_ann = ann
+					elif ann.start > bp and ann.type == "cds": # for now do not consider intonic breakpoint
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end))
+
+		else:
+			if is_fw: # tail gene on forward strand
+				for ann in trans_ann_list:
+					if ann.type=="cds" and ann.idx == last_exon_idx:
+						last_exon_end = len("".join(seqs)) + (ann.end  - ann.start + 1)
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						splice_site = ref.fetch(format_chr(ann.chr, ref), bp-21, bp-1)
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), bp-1, ann.end)) 
+						if ann.type == "cds":
+							bp_in_coding = True
+						bp_ann = ann
+					elif ann.start > bp and ann.type != "intron": # for now do not consider intonic breakpoint
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end))
+			else:
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), ann.start-1, bp)) 
+						splice_site = ref.fetch(format_chr(ann.chr, ref), bp, bp+20)
+						if ann.type == "cds":
+							bp_in_coding = True
+						bp_ann = ann
+						break
+					elif ann.type != "intron": # for now do not consider intonic breakpoint
+						seqs.append(ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end))
+
+		'''
+		# head gene on forward strand, all exons before bp and for the ann contains bp, output seq from start to bp
+		if (is_head and is_fw) or (not is_head and not is_fw) :
+			for ann in trans_ann_list:
+				if ann.start <= bp <= ann.end:
+					seqs.append(ref.fetch(ann.chr, ann.start-1, bp)) 
+					splice_site = ref.fetch(ann.chr, bp, bp+2)
+					if ann.type == "cds":
+						bp_in_coding = True
+					if ann.idx == last_exon_idx:
+						
+					break
+				elif ann.type == "cds":
+					seqs.append(ref.fetch(ann.chr, ann.start-1, ann.end))
+		else: # head gene on reverse strand, start from bp to the end of ann that contains it, then all exons after bp
+			for ann in trans_ann_list:
+				if ann.start <= bp <= ann.end:
+					splice_site = ref.fetch(ann.chr, bp-3, bp-1)
+					seqs.append(ref.fetch(ann.chr, bp-1, ann.end)) 
+					if ann.type == "cds":
+						bp_in_coding = True
+				elif ann.start > bp and ann.type != "intron": # for now do not consider intonic breakpoint
+					seqs.append(ref.fetch(ann.chr, ann.start-1, ann.end))
+		if is_head and not bp_in_coding:		
+			print "head gene breakpoint not in cds", bp, trans_id
+			return "", "", -1, -100
+		'''
+		#trans_seq = "___".join(seqs)
+		trans_seq = "".join(seqs).upper()
+		splice_site = splice_site.upper()		
+		if not is_fw:
+			trans_seq = sequtils.rc_seq(trans_seq, "rc")
+			splice_site = sequtils.rc_seq(splice_site, "rc")
+		'''
+		if not is_head and last_exon_end > 0:
+			print "last exon end:", last_exon_end
+			print "last codon:", trans_seq[last_exon_end-3:last_exon_end]
+		'''
+		return trans_seq, splice_site, last_exon_end, distance_to_bnd, bp_ann, bp_in_coding	
+			
+
+
+	# for given cff fusion, test all combination of head/tail gene sequences to check their codons. Can be used to classiy readthrough more strictly by requiring the fusion seq in-frame and reach the end of tail gene		
+	def check_codon(self, gene_ann, ref_file):
+		head_seqs = []
+		tail_seqs = []
+		ref = pysam.FastaFile(ref_file)	
+		# get all transcripts for head gene	
+		head_gene_intervals = gene_ann.get_gene_interval(self.reann_gene1)
+		tids = head_gene_intervals.transcript_ids
+		if not head_gene_intervals.is_coding:
+			print >> sys.stderr, "head gene is not coding"
+			return
+			
+		if not tids:
+			print >> sys.stderr, "Head gene not in annotation:", self.reann_gene1
+			return
+
+		for transcript_id in tids:
+			bpann_list = gene_ann.get_transcripts_ann(transcript_id) # all GeneBed annotations of transcript_id
+			if not bpann_list[0].start <= self.pos1 <= bpann_list[-1].end: #skip the transcript that doesnt include the breakpoint
+				continue
+			seq, splice_site, last_exon_end, distance_to_bnd, bp_ann, bp_in_coding =  self.get_transcript_seq(bpann_list, self.pos1, ref, "head")
+			head_seqs.append((seq, splice_site, last_exon_end, transcript_id, distance_to_bnd, bp_ann, bp_in_coding))
+		# get all transcripts for tail gene	
+		tids = (gene_ann.get_gene_interval(self.reann_gene2)).transcript_ids
+		if not tids:
+			# no tail gene, make a fake bed annotation, extract 1k sequence downstream the breakpint
+			fake_ann = GeneBed("")
+			fake_ann_len = 1000
+			fake_ann.chr = self.chr2
+			fake_ann.type = "intergenic"
+			fake_ann.idx = 0
+			fake_ann.start = self.pos2 - fake_ann_len
+			fake_ann.end = self.pos2 + fake_ann_len
+
+			# according to head gene strand, infer fake_ann strand
+			if self.strand1 == self.strand2: # head gene and tail gene on different strand	 
+				if head_gene_intervals.strand == "f":
+					fake_ann.strand = "r"
+				else:
+					fake_ann.strand = "f"
+			else: # head and tail gene on same strand
+				fake_ann.strand = head_gene_intervals.strand
+			seq, splice_site, last_exon_end, distance_to_bnd, bp_ann, bp_in_coding = self.get_transcript_seq([fake_ann], self.pos2, ref, "tail")
+			tail_seqs.append((seq, splice_site, last_exon_end, fake_ann.transcript_id, distance_to_bnd, bp_ann, bp_in_coding))
+		for transcript_id in tids:
+			bpann_list = gene_ann.get_transcripts_ann(transcript_id) # all GeneBed annotations fo transcript_id
+			if not bpann_list[0].start <= self.pos2 <= bpann_list[-1].end:
+				continue
+			seq, splice_site, last_exon_end, distance_to_bnd, bp_ann, bp_in_coding = self.get_transcript_seq(bpann_list, self.pos2, ref, "tail")
+			tail_seqs.append((seq, splice_site, last_exon_end, transcript_id, distance_to_bnd, bp_ann, bp_in_coding))
+		# search first stop codon in tail gene sequence, stop codon: TAA, TAG, TGA
+		stop_codons= set(["TAA", "TAG", "TGA"])
+		seq_set = set()
+		# among all the combinations of head and tail sequences, 1. check if the fusion can reach any transcript's end (first stop codon is the tail transcript's stop codon); 2. if not 1, return the smallest stop condon position.
+		infered_fusion_seq_info = ("", False, -1, "", "", -100, "", 0) # infered seq, reach last exon, first stop codon pos, upstream transcript id, downstream gene transcript_id, distance_to_bnd, score
+		for seq1, splice_site1, last_exon_end1, transcript_id1, distance_to_bnd1, bp_ann1, bp_in_coding1 in head_seqs:
+			if not seq1:
+				continue
+			shift1 = len(seq1) % 3
+			for seq2, splice_site2, last_exon_end2, transcript_id2, distance_to_bnd2, bp_ann2, bp_in_coding2 in tail_seqs:
+				i = 0
+				shift_seq2 = seq2[(3-shift1)%3:]
+				# convert shift_seq2 to triplets
+				shift_seq2_triplets = re.findall(r'.{3}', shift_seq2)
+				# get uniq triplets set
+				shift_seq2_codon_set = set(shift_seq2_triplets)
+				# compare to stop codons
+				shift_seq2_stop_conons =  stop_codons & shift_seq2_codon_set
+				# stop codon found, get the first one
+				if shift_seq2_stop_conons:
+					first_stop_idx = len(shift_seq2_triplets)
+					first_stop_codon = "NA"
+					for codon in shift_seq2_stop_conons:
+						stop_idx = shift_seq2_triplets.index(codon)	
+						first_stop_idx = stop_idx
+						first_stop_codon = codon
+						#if stop_idx < first_stop_idx:
+						#	first_stop_idx = stop_idx
+						#	first_stop_codon = codon
+					tail_gene_seq = seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]	
+					#if not tail_gene_seq in seq_set:
+					update = False
+					score = 0 # current 
+					is_inframe = False
+					if bp_in_coding1 and bp_in_coding2 and (len(seq1) + len(seq2)) % 3 == 0: # head transcript is coding and inframe
+						is_inframe = True
+						score += 10000
+
+					if abs(infered_fusion_seq_info[5]) > abs(distance_to_bnd1): # current combination closer to annotation boundary
+						score += 1000
+					if bp_ann1.type == "cds": # head transcript invole exon
+						score += 500
+					if bp_ann2.type == "cds": 
+						score += 300
+					if bp_ann1.type == "utr5" or  bp_ann1.type == "utr3": # head transcript involve utr
+						score += 200
+					if bp_ann2.type == "utr5" or bp_ann2.type == "utr3": 
+						score += 100
+					'''
+					if abs(infered_fusion_seq_info[5]) < abs(distance_to_bnd1):
+						score1 += 1000
+					if abs(infered_fusion_seq_info[5]) > abs(distance_to_bnd1):
+						score2 += 1000
+					
+					if bp_ann1.type == "cds": # saved combination reaches last exon
+						score1 += 500
+					if bp_ann2.type == "cds": # current combination reaches last exon:
+						score2 += 400
+
+					if bp_ann1.type == "utr5" or  bp_ann1.type == "utr3": # saved combination reaches last exon
+						score1 += 200
+					if bp_ann2.type == "utr5" or bp_ann2.type == "utr3": # current combination reaches last exon:
+						score2 += 100
+					'''
+					if gene_ann.transcript_is_coding(transcript_id2): # current transcript has cds
+						score += 10
+					if first_stop_idx <= int(infered_fusion_seq_info[2]): # saved combination has a smaller stop codon position
+						score += 1
+					update = True if score > int(infered_fusion_seq_info[7]) else False
+					if update:
+						#print "Scores:", score, infered_fusion_seq_info[5], distance_to_bnd1, len(seq1), len(seq2), infered_fusion_seq_info[6]		
+						#print "stop codon found:", first_stop_codon, first_stop_idx
+						#print "length:", len(seq1), len(seq2), len(seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]), last_exon_end2
 				
+						# infered fusion sequence, ends at first stop codon
+						infered_fusion_seq = seq1 + "_" + splice_site1 + "__" + splice_site2 + "_" + seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]
+						#infered_fusion_seq_info = (infered_fusion_seq, len(seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3])==last_exon_end2, first_stop_idx, transcript_id1, transcript_id2, distance_to_bnd1, bp_ann1, score)
+						infered_fusion_seq_info = (infered_fusion_seq, is_inframe, first_stop_idx, transcript_id1, transcript_id2, distance_to_bnd1, bp_ann1, score)
+					#seq_set.add(tail_gene_seq)	
+					#print "trans id:", transcript_id2
+					#print "stop codon found:", first_stop_codon, first_stop_idx
+					#print "length:", len(seq1), len(seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]), last_exon_end2
+					#print "seq1:", seq1 + "|" + splice_site1
+					#print "seq2:", splice_site2 + "|" + seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]
+					
+					#seq_set.add((seq1, splice_site1, seq2, splice_site2, first_stop_idx, first_stop_codon))
+					
+				else:
+					#print "no stop codon found:", transcript_id2
+					#print [ann.type for ann in gene_ann.get_transcripts_ann(transcript_id2)]
+					pass
+					
+		#print infered_fusion_seq_info
+		is_inframe = infered_fusion_seq_info[1]
+		seqs = infered_fusion_seq_info[0].split("_")
+		distance_to_bnd = infered_fusion_seq_info[5]
+		bp_ann = infered_fusion_seq_info[6]
+		if len(seqs) == 5:
+			#print "before:", self.pos1, self.pos2
+			#print infered_fusion_seq_info[0]
+			self.aln_seq_to_boundary(seqs[0], seqs[1], seqs[3], seqs[4], distance_to_bnd, bp_ann.strand)
+
+			#print "after:", self.pos1, self.pos2
+			self.is_inframe = is_inframe
+			print seqs[0][-10:]
+			print seqs[4]
+			print len(seqs[4])
+		#for seq in seqs: print len(seq),
+		#print
+		
+		#print len(head_seq), len(tail_seq), len(head_seq) + len(tail_seq)
+		'''
+		for seq1, splice_site1, seq2, splice_site2, first_stop_idx, first_stop_codon in seq_set:
+			continue
+			shift1 = len(seq1) % 3
+			print "stop codon found:", first_stop_codon, first_stop_idx
+			print "length:", len(seq1), len(seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3])
+			print "seq1:", seq1 + "|" + splice_site1
+			print "seq2:", splice_site2 + "|" + seq2[:(3-shift1)%3 + (first_stop_idx + 1)*3]
+			#print "seq1:", ",".join(re.findall(r'.{3}', seq1)) + "," + seq1[-(len(seq1) % 3):] + "|" + splice_site1
+			#print "seq2:", splice_site2 + "|" + seq2[:(3-shift1)%3] + "," + ",".join(shift_seq2_triplets[:first_stop_idx+1])
+		'''	
+		ref.close()
+		
+		
 class GeneIntervals():
 	def __init__(self, bed_ann_list):
 		'''
@@ -1100,6 +1508,7 @@ class GeneIntervals():
 			self.strand = "NA"
 			self.is_coding = False
 			self.is_contradictory = True # contradictory gene annotation, will not be used
+			self.transcript_ids = []
 		else:
 			self.gene_name = bed_ann_list[0].gene_name
 			self.chr = bed_ann_list[0].chr
@@ -1108,6 +1517,7 @@ class GeneIntervals():
 			self.end = max([a.end for a in bed_ann_list])
 			self.is_coding = True if "cds" in [a.type for a in bed_ann_list] else False
 			self.is_contradictory = False
+			self.transcript_ids = list(set([genebed.transcript_id for genebed in bed_ann_list]))
 		'''
 		if not bed_ann_list:
 			self.gene_name = "NA"
@@ -1154,6 +1564,7 @@ class GeneIntervals():
 			new_interval.start =  min(self.start, interval2.start)
 			new_interval.end =  max(self.end, interval2.end)
 			new_interval.strand = self.strand
+			new_interval.transcript_ids = list(set(self.transcript_ids + interval2.transcript_ids))
 			# for merged gene intervals is_coding has no sense
 			new_interval.is_coding = False
 			
@@ -1212,7 +1623,7 @@ class GeneAnnotation():
 			print >> sys.stderr, "length:", len(self.__gene_intervals.keys())
 			print >> sys.stderr, "unit size:", sys.getsizeof(self.__gene_intervals[self.__gene_intervals.keys()[0]].start)
 			'''
-			#self.load_transcripts_ann(gene_ann_bed)
+			self.load_transcripts_ann(gene_ann_bed)
 	# for each transcript save all its cds,intron, utr annotations in dictionary __transcripts_ann
 	def load_transcripts_ann(self, gene_ann_bed):
 		start_time = time.time()
@@ -1228,6 +1639,12 @@ class GeneAnnotation():
 			return self.__transcripts_ann[trans_id]
 		else:
 			return []	
+	def transcript_is_coding(self, trans_id):
+		if trans_id in self.__transcripts_ann:
+			if filter(lambda ann:ann.type=="cds" ,self.__transcripts_ann[trans_id]):
+				return True
+		return False	
+
 	def get_previous_ann(self, bpann):
 		bpann_list = self.get_transcripts_ann(bpann.transcript_id)
 		pre_bpann_list = []
@@ -1281,8 +1698,8 @@ class GeneAnnotation():
 				self.__coding_gene_list.append(interval)
 		self.__coding_gene_list.sort(key = lambda i:(i.chr, i.start))
 
-		i_f = 0 # idx of forward starnd gene
-		i_r = 0 # idx of reverse starnd gene
+		i_f = 0 # idx of forward strand gene
+		i_r = 0 # idx of reverse strand gene
 		#pre_interval_f = GeneIntervals("None", "chr0", 0, 0, "+", False)
 		#pre_interval_r = GeneIntervals("None", "chr0", 0, 0, "-", False)
 		pre_interval_f = GeneIntervals([])
@@ -1349,7 +1766,7 @@ class GeneAnnotation():
 			return self.__gene_intervals[gene_name]
 		else:
 			print >> sys.stderr, "Warnning: gene name", gene_name, "is not in current annotation."
-			return None
+			return GeneIntervals([])
 	# get distance between two gene intervals, return -1 if genes are rom different chrs, minus value if overlap.
 	def get_gene_distance(self, gene1, gene2):
 		interval1 = self.get_gene_interval(gene1)
@@ -1368,7 +1785,7 @@ class GeneAnnotation():
 			
 			
 			
-			
+	#return a list of GeneBed annotation		
 	def map_pos_to_genes(self, chr, pos):
 		# if pos is within 10bp window of any boundary, set close_to_boundary True
 		t = 10
@@ -1473,10 +1890,8 @@ class GeneAnnotation():
 							previous_introns.append(adjacent_bpann)
 			idx -= 1
 		return previous_introns, next_introns	
-		
-		
-			
 				
+# Deprecated, use CffFusion instead
 class GeneFusions():
 	__fusions = {}
 	__genes = {}
@@ -1731,14 +2146,14 @@ def get_gene_names_from_gene_order(gene_order_string):
 # build fusion sequence, with up/downstream genome sequence, splicing not considered by far		
 def get_fusion_seq(fusion, ref, seg_len):
 
-        chr1 = fusion.chr1
-        chr2 = fusion.chr2
-        bp1 = fusion.pos1
-        bp2 = fusion.pos2
-        strand1 = fusion.strand1
-        strand2 = fusion.strand2
+	chr1 = fusion.chr1
+	chr2 = fusion.chr2
+	bp1 = fusion.pos1
+	bp2 = fusion.pos2
+	strand1 = fusion.strand1
+	strand2 = fusion.strand2
 
-        refs = pysam.FastaFile(ref)
+	refs = pysam.FastaFile(ref)
 	if not chr1 in refs:
 		if chr1.startswith("chr"):
 			chr1 = chr1[3:]
@@ -1751,24 +2166,196 @@ def get_fusion_seq(fusion, ref, seg_len):
 		sys.exit(1)
 
 
-        if strand1 == "+": ## ->|
-                win_start1 = bp1 -seg_len
-                win_end1 = bp1
-                seq1 = refs.fetch(chr1, win_start1, win_end1)
-        else: ## |<-
-                win_start1 = bp1 - 1
-                win_end1 = bp1 +seg_len - 1
-                seq1 = sequtils.rc_seq(refs.fetch(chr1, win_start1, win_end1), "rc")
+	if strand1 == "+": ## ->|
+		win_start1 = bp1 -seg_len
+		win_end1 = bp1
+		seq1 = refs.fetch(chr1, win_start1, win_end1)
+	else: ## |<-
+		win_start1 = bp1 - 1
+		win_end1 = bp1 +seg_len - 1
+		seq1 = sequtils.rc_seq(refs.fetch(chr1, win_start1, win_end1), "rc")
 
-        if strand2 == "+": ## <-|
-                win_start2 = bp2 - seg_len
-                win_end2 = bp2
-                seq2 = sequtils.rc_seq(refs.fetch(chr2, win_start2, win_end2), "rc")
-        else: ## |->
-                win_start2 = bp2 - 1
-                win_end2 = bp2 + seg_len - 1
-                seq2 = refs.fetch(chr2, win_start2, win_end2)
-        fusion.seq1 = seq1.upper()
+	if strand2 == "+": ## <-|
+		win_start2 = bp2 - seg_len
+		win_end2 = bp2
+		seq2 = sequtils.rc_seq(refs.fetch(chr2, win_start2, win_end2), "rc")
+	else: ## |->
+		win_start2 = bp2 - 1
+		win_end2 = bp2 + seg_len - 1
+		seq2 = refs.fetch(chr2, win_start2, win_end2)
+	fusion.seq1 = seq1.upper()
 	fusion.seq2 = seq2.upper()
-        #return seq1.upper(), seq2.upper()
+	if not fusion.seq1:
+		fusion.seq1 = "NA"
+	if not fusion.seq2:
+		fusion.seq2 = "NA"
 		
+	refs.close()
+	#return seq1.upper(), seq2.upper()
+def format_chr(chr0, ref):	
+	formatted_chr = chr0
+	if not formatted_chr in ref:
+		if formatted_chr.startswith("chr"):
+			formatted_chr = formatted_chr[3:]
+		else:
+			formatted_chr = "chr" + formatted_chr
+	
+	return formatted_chr
+
+
+# for a given gene, according to gene_order and bp get all its transcript sequences and 100bp potential fusion sequences (only for head gene)
+def build_transcript_and_fusion_seq(gene_ann, gene_name, ref, bp, gene_order):
+	
+	# get all transcripts for head gene	
+	seqs = []
+	gene_intervals = gene_ann.get_gene_interval(gene_name)
+	tids = gene_intervals.transcript_ids
+	if not tids:
+		print >> sys.stderr, "Gene not in annotation:", gene_name
+		print >> sys.stderr, "Can not build ref seq"
+		#sys.exit(1)
+		return seqs
+		
+
+	is_head = (gene_order == "head")
+	for transcript_id in tids:
+		trans_ann_list = gene_ann.get_transcripts_ann(transcript_id) # all GeneBed annotations of transcript_id
+		if not trans_ann_list[0].start <= bp <= trans_ann_list[-1].end: #skip the transcript that doesnt include the breakpoint
+			continue
+		is_fw = (trans_ann_list[0].strand == "f")
+		trans_seqs = []
+		fusion_seqs = []
+		if is_head:
+			if is_fw: # head gene on forward strand
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, bp)
+						fusion_seqs.append(seq)
+						if ann.type == "intron": # assume a intron-retention
+							trans_seqs.append(seq)
+					if ann.type != "intron":
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end)
+						trans_seqs.append(seq)
+						if ann.end < bp:
+							fusion_seqs.append(seq)
+			else:
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), bp-1, ann.end)
+						fusion_seqs.append(seq)
+						if ann.type == "intron": # breakpoint in intron, cant build seq
+							trans_seqs.append(seq)
+						
+					if ann.type != "intron": # for now do not consider intonic breakpoint
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end)
+						trans_seqs.append(seq)
+						if ann.start > bp:
+							fusion_seqs.append(seq)
+
+		else: # tail gene, do not build transcript seq
+			if is_fw: # tail gene on forward strand
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), bp-1, ann.end)
+						fusion_seqs.append(seq)
+					elif ann.start > bp and ann.type != "intron": # for now do not consider intonic breakpoint
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end)
+						fusion_seqs.append(seq)
+						
+			else:
+				for ann in trans_ann_list:
+					# breakpoint in current bed annotation
+					if ann.start <= bp <= ann.end:
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, bp)
+						fusion_seqs.append(seq)
+						break
+					elif ann.type != "intron": # for now do not consider intonic breakpoint
+						seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end)
+						fusion_seqs.append(seq)
+
+		trans_seq = ("".join(trans_seqs)).upper()
+		fusion_seq = ("".join(fusion_seqs)).upper()
+			
+		'''
+		print transcript_id
+		print trans_seq.startswith(fusion_seq)
+		print len(trans_seq), len(fusion_seq)
+		print "1",fusion_seq[-100:]
+		fusion_bp = len(fusion_seq)
+		print "3", trans_seq[max(0, fusion_bp-seq_len):fusion_bp]
+		'''
+		
+		if fusion_seq:
+			seq_len = 100
+			if not is_fw:
+				trans_seq = sequtils.rc_seq(trans_seq, "rc")
+				fusion_seq = sequtils.rc_seq(fusion_seq, "rc")
+
+			if is_head:
+				fusion_bp = len(fusion_seq)
+				fusion_seq = fusion_seq[-seq_len:]
+				trans_seq1 = trans_seq[max(0, fusion_bp-seq_len):fusion_bp]
+				trans_seq2 = trans_seq[fusion_bp:fusion_bp+seq_len]
+
+			else:
+				fusion_bp = len(trans_seq) - len(fusion_seq)
+				fusion_seq = fusion_seq[:seq_len]
+				trans_seq1 = trans_seq[max(0, fusion_bp-seq_len):fusion_bp]
+				trans_seq2 = trans_seq[fusion_bp:fusion_bp+seq_len]
+
+			seqs.append((trans_seq1, trans_seq2, fusion_seq))
+	return seqs		
+# for given gene annotation bed file, build junctions sequences for echo transcript
+# ref is pysam.FastaFile
+
+#chr1    24683494        24685032        ENST00000003583 utr3    0       r       STPG1   ENSG00000001460
+#chr1    24685032        24685109        ENST00000003583 cds     0       r       STPG1   ENSG00000001460
+#chr1    24685109        24687340        ENST00000003583 intron  0       r       STPG1   ENSG00000001460
+def output_trans_seq(trans_seqs, bp_list, cur_trans_id, cur_trans_strand, junc_seq_len):
+	trans_seq = "".join(trans_seqs)
+	junc_id = 0
+	for bp in bp_list:
+		junc_id += 1
+		seq1 = trans_seq[max(0, bp-junc_seq_len):bp]
+		seq2 = trans_seq[bp:min(len(trans_seq), bp+junc_seq_len)]
+		seq = seq1 + seq2
+		if cur_trans_strand == "r":
+			seq = sequtils.rc_seq(seq, "rc")
+		ref_name = ">" + cur_trans_id + "_" + str(junc_id)
+		print ref_name
+		#print seq1, seq2
+		print seq
+
+	
+def build_junction_seq_for_gene_bed(ref, gene_bed):
+	cur_trans_id = ""
+	cur_trans_strand = ""
+	cur_trans_chr = ""
+	junc_seq_len = 100
+	trans_seqs = []
+	bp_list = []
+	for line in open(gene_bed, "r"):
+		ann = GeneBed(line)
+		if not format_chr(ann.chr, ref) in ref:
+			continue
+		if cur_trans_id != ann.transcript_id:
+			#output transcript junction sequences
+			output_trans_seq(trans_seqs, bp_list, cur_trans_id, cur_trans_strand, junc_seq_len)
+
+			cur_trans_id = ann.transcript_id
+			cur_trans_strand = ann.strand
+			cur_trans_chr = ann.chr
+			bp_list = []
+			trans_seqs = []
+		if ann.type != "intron":
+			seq = ref.fetch(format_chr(ann.chr, ref), ann.start-1, ann.end)	
+			trans_seqs.append(seq)
+		else:
+			bp_list.append(len("".join(trans_seqs)))
+		#print ann.tostring(), ann.end - ann.start
+	output_trans_seq(trans_seqs, bp_list, cur_trans_id, cur_trans_strand, junc_seq_len)
+			
+				
