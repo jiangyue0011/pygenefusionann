@@ -1449,9 +1449,9 @@ class CffFusion():
 
 			#print "after:", self.pos1, self.pos2
 			self.is_inframe = is_inframe
-			print seqs[0][-10:]
-			print seqs[4]
-			print len(seqs[4])
+			#print seqs[0][-10:]
+			#print seqs[4]
+			#print len(seqs[4])
 		#for seq in seqs: print len(seq),
 		#print
 		
