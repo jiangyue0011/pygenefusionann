@@ -810,7 +810,7 @@ class CffFusion():
 
 
 				
-		common_genes =  set(genes1.keys()) & set(genes2.keys())
+		#common_genes =  set(genes1.keys()) & set(genes2.keys())
 
 		# type of genes, coding gene ids
 		for gene_name in set(genes1.keys()):
@@ -937,7 +937,8 @@ class CffFusion():
 			if not genes1:
 				category = "NoDriverGene"
 			# map to same gene
-			elif common_genes:
+			#elif common_genes:
+			elif self.reann_gene1 == self.reann_gene2:
 				category = "SameGene"
 			else:
 				# category fusions into: read through, gene fusion, truncated coding, truncated noncoding, nonsense
@@ -1346,6 +1347,7 @@ class CffFusion():
 		'''
 		#trans_seq = "___".join(seqs)
 		trans_seq = "".join(seqs).upper()
+p
 		splice_site = splice_site.upper()		
 		if not is_fw:
 			trans_seq = sequtils.rc_seq(trans_seq, "rc")
