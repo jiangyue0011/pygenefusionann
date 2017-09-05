@@ -71,18 +71,16 @@ class CategoryFusions():
 		self.cluster_type = tmp[0]
 		self.gene1 = tmp[1]
 		self.gene2 = tmp[2]
-		self.max_split_cnt = int(tmp[3])
-		self.max_span_cnt = int(tmp[4])
-		self.sample_type = tmp[5] #tmp[2].split(",")
-		self.disease = tmp[6].split(",")
-		self.tools = tmp[7].split(",")
-		self.inferred_fusion_type = tmp[8]
-		self.gene1_on_bnd = tmp[9]
-		self.gene1_close_to_bnd = tmp[10]
-		self.gene2_on_bnd = tmp[11]
-		self.gene2_close_to_bnd = tmp[12]
-		self.dna_supp = tmp[13] # dna support, 0: has data, no dna pairs; >0:  number of dna pair clusters; -1: no data; -2: gene not in annotation; -3: chr not in bam; -4: confilicting windown start and end
-		self.samples = tmp[14].split(",")
+		self.sample_type = tmp[3] #tmp[2].split(",")
+		self.disease = tmp[4].split(",")
+		self.tools = tmp[5].split(",")
+		self.inferred_fusion_type = tmp[6]
+		self.gene1_on_bnd = tmp[7]
+		self.gene1_close_to_bnd = tmp[8]
+		self.gene2_on_bnd = tmp[9]
+		self.gene2_close_to_bnd = tmp[10]
+		self.dna_supp = tmp[11] # dna support, 0: has data, no dna pairs; >0:  number of dna pair clusters; -1: no data; -2: gene not in annotation; -3: chr not in bam; -4: confilicting windown start and end
+		self.samples = tmp[12].split(",")
 		self.line = category_line.strip()
 	def out(self):
 		print self.line
@@ -98,43 +96,16 @@ class CategoryFusionStats():
 				continue
 			category = CategoryFusions(line)
 			self.category_list.append(category)
-	def filter_clustered_fusions(self, fusion_list, split=0, span=0, tool_num=0, on_bnd=False, close_to_bnd=False, fusion_type=[]):
-		filtered_list = []
-		for fu in fusion_list:
-			keep = False
-			if fu.max_split_cnt >= split and fu.max_span_cnt >= span and len(fu.tools) >= tool_num:
-				if on_bnd:
-					if fu.gene1_on_bnd and fu.gene2_on_bnd:
-						keep = True
-				elif close_to_bnd:
-					if fu.gene1_close_to_bnd and fu.gene2_close_to_bnd:
-						keep = True
-				else:
-						keep = True
-			if keep:
-				filtered_list.append(fu)
-		return filtered_list
-				
-	def filter_samples(self, fusion_list, sample_list):
-		return [x for x in fusion_list if set(sample_list).intersection(set(x.samples))]
 	def filter_recurrent(self, fusion_list, threshold):
 		return filter(lambda x:len(x.samples)>=threshold, fusion_list)
-
 	def filter_disease(self, fusion_list, disease):
 		return filter(lambda x:disease in x.disease, fusion_list)
 
 	def filter_sample_number(self, fusion_list, threshold, sample_prefix):
 		return filter(lambda x:len(filter(lambda y:y.startswith(sample_prefix), x.samples)) >= threshold, fusion_list)
 
-	def filter_split_cnt (self, fusion_list, split_cnt): 	
-		return filter(lambda x:x.max_split_cnt>=split_cnt, fusion_list)
-
-	def filter_span_cnt (self, fusion_list, span_cnt): 	
-		return filter(lambda x:x.max_span_cnt>=span_cnt, fusion_list)
-
 	def filter_sample_type (self, fusion_list, sample_type): 	
 		return filter(lambda x:x.sample_type==sample_type, fusion_list)
-
 	def filter_tools_name (self, fusion_list, tool_name): 	
 		return filter(lambda x:tool_name in x.tools, fusion_list)
 	def filter_tools_num (self, fusion_list, tools_num): 	
@@ -209,8 +180,6 @@ class CffFusionStats():
 			gene1_list = [f.reann_gene1 for f in fusion_list]
 			gene2_list = [f.reann_gene2 for f in fusion_list]
 
-			max_split_cnt = max([f.split_cnt for f in fusion_list])
-			max_span_cnt = max([f.span_cnt for f in fusion_list])
 			sample_list = [f.sample_name for f in fusion_list]	
 			disease_list = [f.disease for f in fusion_list]	
 			tool_list = [f.tool for f in fusion_list]	
@@ -224,8 +193,7 @@ class CffFusionStats():
 
 			category_list = [f.category for f in fusion_list]	
 
-			#print cluster_type, ",".join(list(set(gene1_list))), ",".join(list(set(gene2_list))), max_split_cnt, max_span_cnt, ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num, ",".join(list(set(sample_list)))
-			print "\t".join(map(str, [cluster_type, ",".join(list(set(gene1_list))), ",".join(list(set(gene2_list))), max_split_cnt, max_span_cnt, ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num, ",".join(list(set(sample_list)))]))
+			print cluster_type, ",".join(list(set(gene1_list))), ",".join(list(set(gene2_list))), ",".join(list(set(sample_type_list))), ",".join(list(set(disease_list))), ",".join(list(set(tool_list))), ",".join(list(set(category_list))), gene1_on_bndry, gene1_close_to_bndry, gene2_on_bndry, gene2_close_to_bndry, dna_supp_cluster_num, ",".join(list(set(sample_list)))
 
 	def output_clustered_fusions_version1(self, fusion_list, cluster_type):	
 			sample_list = [f.sample_name for f in fusion_list]	
@@ -810,7 +778,7 @@ class CffFusion():
 
 
 				
-		#common_genes =  set(genes1.keys()) & set(genes2.keys())
+		common_genes =  set(genes1.keys()) & set(genes2.keys())
 
 		# type of genes, coding gene ids
 		for gene_name in set(genes1.keys()):
@@ -843,7 +811,7 @@ class CffFusion():
 			if gene_ann.is_contradictory(gene_name):
 				gene_name += "(Cont)"
 			#list2.append(gene_name + "_" + ",".join(list(tmp)))
-		
+		'''
 		# No driver gene
 		if not genes1:
 			category = "NoDriverGene"
@@ -871,7 +839,6 @@ class CffFusion():
 			else:
 				print >> sys.stderr, "Warning: Unknown category."
 				print >> sys.stderr, type1, type2
-		'''
 
 		# Calsulate score for every gene pair, choose the best
 		
@@ -905,6 +872,7 @@ class CffFusion():
 			self.score1, self.gene1_on_bndry, self.gene1_close_to_bndry, self.bpann1 = max_t1
 			self.score2, self.gene2_on_bndry, self.gene2_close_to_bndry, self.bpann2 = max_t2
 			self.score = self.score1 + self.score2
+			self.category = category
 			self.reann_gene1 = self.bpann1.gene_name
 			self.reann_gene2 = self.bpann2.gene_name
 			self.reann_type1 = self.bpann1.type
@@ -932,40 +900,8 @@ class CffFusion():
 				self.t_gene1, self.t_gene2 = self.t_gene2, self.t_gene1
 				self.t_area1, self.t_area2 = self.t_area2, self.t_area1
 
-			## assign fusion to a category according to best score gene pair
-			# No driver gene
-			if not genes1:
-				category = "NoDriverGene"
-			# map to same gene
-			#elif common_genes:
-			elif self.reann_gene1 == self.reann_gene2:
-				category = "SameGene"
-			else:
-				# category fusions into: read through, gene fusion, truncated coding, truncated noncoding, nonsense
-				gene1_is_coding = gene_ann.is_coding(self.reann_gene1)
-				if genes2:
-					gene2_is_coding = gene_ann.is_coding(self.reann_gene2)
-				else:
-					gene2_is_coding = False
-				if gene1_is_coding and gene2_is_coding:
-					for id in id1:
-						tmp = id.split("_")
-						idx = int(tmp[0])
-						strand = tmp[1]
-						#ReadThrough: gene1 and gene2 are adjacent genes (id1 - id2 = 1) or overlapping genes (id1 = id2) but breakpoints cannot map to same gene
-						if (strand == "f" and  str(idx+1) + "_f" in id2 ) or (strand == "r" and  str(idx-1) + "_r" in id2) or (id in id2):
-							category = "ReadThrough"
-						else:
-							category = "GeneFusion"
-				elif gene1_is_coding:
-					category = "TruncatedCoding"
-				elif not gene1_is_coding:
-					category = "TruncatedNoncoding"
-				else:
-					print >> sys.stderr, "Warning: Unknown category."
-					print >> sys.stderr, type1, type2
-			self.category = category
-		
+
+		#print max_t1[0], max_t2[0]
 
 		'''
 		gene_order.append(",".join(list1) + ">>" + ",".join(list2))
@@ -998,18 +934,17 @@ class CffFusion():
 			else:
 				d.setdefault(gene.gene_name, []).append(gene)
 		# for tools do not provide defuse-style strand, regenerate strands, this is assuming that gene1 = 5 prime gene and gene2 = 3 prime gene
-
 		if self.strand1 == "NA" or self.strand2 == "NA":
 			gene_interval1 = ""
 			gene_interval2 = ""
 			for sep in [",", "/"]:
 				for gene_name in (self.t_gene1).split(sep):
-					if not gene_interval1 or gene_interval1.gene_name == "NA":
+					if not gene_interval1:
 						gene_interval1 = gene_ann.get_gene_interval(gene_name)
 					else:
 						break
 				for gene_name in (self.t_gene2).split(sep):
-					if not gene_interval2 or gene_interval2.gene_name == "NA":
+					if not gene_interval2:
 						gene_interval2 = gene_ann.get_gene_interval(gene_name)
 					else:
 						break
@@ -1545,7 +1480,7 @@ class GeneIntervals():
 		self.strand = strand
 		self.is_coding = is_coding
 		'''
-		self.__load(bed_ann_list)
+		self.load(bed_ann_list)
 	def check_bed_ann_list(self, bed_ann_list):
 		flag = True
 		if not bed_ann_list:
@@ -1564,7 +1499,7 @@ class GeneIntervals():
 				print >> sys.stderr, set([(a.gene_name, a.chr, a.strand) for a in bed_ann_list])
 
 		return flag
-	def __load(self, bed_ann_list):
+	def load(self, bed_ann_list):
 		if not self.check_bed_ann_list(bed_ann_list):
 			self.gene_name = "NA"
 			self.chr = "NA"
@@ -1830,8 +1765,7 @@ class GeneAnnotation():
 		if gene_name in self.__gene_intervals:
 			return self.__gene_intervals[gene_name]
 		else:
-			if gene_name != "NA":
-				print >> sys.stderr, "Warnning: gene name", gene_name, "is not in current annotation."
+			print >> sys.stderr, "Warnning: gene name", gene_name, "is not in current annotation."
 			return GeneIntervals([])
 	# get distance between two gene intervals, return -1 if genes are rom different chrs, minus value if overlap.
 	def get_gene_distance(self, gene1, gene2):
